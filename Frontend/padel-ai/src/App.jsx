@@ -85,6 +85,16 @@ function formatShortDateTime(value) {
 function formatTimeLabel(value) {
   return new Date(value).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
 }
+function overlapsTimeRange(startA, endA, startB, endB) {
+  return new Date(startA) < new Date(endB) && new Date(endA) > new Date(startB);
+}
+function getTodayInputValue() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 function getPlayerEntry(match, playerId) {
   return (match?.players ?? []).find((p) => p.playerId === playerId) ?? null;
 }
@@ -128,18 +138,39 @@ function bestPartnerName(name) {
 // ─── LOCAL STORAGE HELPERS for questionnaire data ────────────────────────────
 const RADAR_KEY = "padel_skill_radar";
 const POSTGAME_KEY = "padel_postgame_responses";
+const DISMISSED_POSTGAME_KEY = "dismissedPostGameReviews";
 
-function saveRadarData(data) {
-  try { localStorage.setItem(RADAR_KEY, JSON.stringify(data)); } catch (_) {}
+function scopedStorageKey(baseKey, playerId) {
+  return playerId ? `${baseKey}_player_${playerId}` : `${baseKey}_unknown`;
 }
-function loadRadarData() {
-  try { const d = localStorage.getItem(RADAR_KEY); return d ? JSON.parse(d) : null; } catch (_) { return null; }
+function saveRadarData(data, playerId) {
+  try { localStorage.setItem(scopedStorageKey(RADAR_KEY, playerId), JSON.stringify(data)); } catch (_) {}
 }
-function savePostgameResponses(responses) {
-  try { localStorage.setItem(POSTGAME_KEY, JSON.stringify(responses)); } catch (_) {}
+function loadRadarData(playerId) {
+  try { const d = localStorage.getItem(scopedStorageKey(RADAR_KEY, playerId)); return d ? JSON.parse(d) : null; } catch (_) { return null; }
 }
-function loadPostgameResponses() {
-  try { const d = localStorage.getItem(POSTGAME_KEY); return d ? JSON.parse(d) : []; } catch (_) { return []; }
+function savePostgameResponses(responses, playerId) {
+  try { localStorage.setItem(scopedStorageKey(POSTGAME_KEY, playerId), JSON.stringify(responses)); } catch (_) {}
+}
+function loadPostgameResponses(playerId) {
+  try { const d = localStorage.getItem(scopedStorageKey(POSTGAME_KEY, playerId)); return d ? JSON.parse(d) : []; } catch (_) { return []; }
+}
+function loadDismissedPostgameReviews(playerId) {
+  try { const d = localStorage.getItem(scopedStorageKey(DISMISSED_POSTGAME_KEY, playerId)); return d ? JSON.parse(d) : []; } catch (_) { return []; }
+}
+function saveDismissedPostgameReviews(matchIds, playerId) {
+  try { localStorage.setItem(scopedStorageKey(DISMISSED_POSTGAME_KEY, playerId), JSON.stringify(matchIds)); } catch (_) {}
+}
+function markPostgameReviewDismissed(matchId, playerId) {
+  if (!matchId) return;
+  const key = String(matchId);
+  const dismissed = loadDismissedPostgameReviews(playerId).map(String);
+  if (!dismissed.includes(key)) saveDismissedPostgameReviews([...dismissed, key], playerId);
+}
+function getReviewedOrDismissedPostgameIds(playerId) {
+  const reviewed = loadPostgameResponses(playerId).map((r) => String(r.matchId));
+  const dismissed = loadDismissedPostgameReviews(playerId).map(String);
+  return new Set([...reviewed, ...dismissed]);
 }
 
 // ─── POST-GAME QUESTIONNAIRE MODAL ────────────────────────────────────────────
@@ -152,7 +183,7 @@ const RADAR_SKILLS = [
   { key: "mental",      label: "Mental Focus",      question: "How focused & composed were you?",      options: ["Tilted often", "Lost focus", "Mostly focused", "Locked in"] },
 ];
 
-function PostGameModal({ matchId, onClose, onSave }) {
+function PostGameModal({ matchId, playerId, onClose, onSave }) {
   const [step, setStep]       = useState(0);
   const [answers, setAnswers] = useState({});
   const [saving, setSaving]   = useState(false);
@@ -179,16 +210,16 @@ function PostGameModal({ matchId, onClose, onSave }) {
       return { skill: s.label, you: score, avg: 55 };
     });
     // Merge with existing — weighted average with past entries
-    const existing = loadRadarData();
+    const existing = loadRadarData(playerId);
     let merged = radar;
     if (existing && existing.length === radar.length) {
       merged = radar.map((r, i) => ({ ...r, you: Math.round(r.you * 0.4 + existing[i].you * 0.6) }));
     }
-    saveRadarData(merged);
+    saveRadarData(merged, playerId);
     // Save raw response for history
-    const responses = loadPostgameResponses();
+    const responses = loadPostgameResponses(playerId);
     responses.push({ matchId, date: new Date().toISOString(), answers: finalAnswers });
-    savePostgameResponses(responses);
+    savePostgameResponses(responses, playerId);
     setSaving(false);
     onSave(merged);
   };
@@ -257,8 +288,11 @@ function RecordMatchModal({ onClose, onRecorded }) {
 
   const [courts, setCourts] = useState([]);
   const [players, setPlayers] = useState([]);
+  const [bookings, setBookings] = useState([]);
+  const [currentPlayerId, setCurrentPlayerId] = useState(null);
 
   const [courtId, setCourtId] = useState("");
+  const [selectedBookingId, setSelectedBookingId] = useState("");
   const [a1, setA1] = useState("");
   const [a2, setA2] = useState("");
   const [b1, setB1] = useState("");
@@ -270,12 +304,28 @@ function RecordMatchModal({ onClose, onRecorded }) {
     let mounted = true;
     (async () => {
       try {
-        const [courtsResp, playersResp] = await Promise.all([apiFetch("/courts"), apiFetch("/players")]);
+        const [courtsResp, playersResp, meResp, bookingsResp] = await Promise.all([
+          apiFetch("/courts"),
+          apiFetch("/players"),
+          apiFetch("/players/me"),
+          apiFetch("/bookings/my"),
+        ]);
         if (!mounted) return;
         const activeCourts = (courtsResp || []).filter((c) => c.isActive !== false);
+        const confirmedBookings = (bookingsResp || [])
+          .filter((b) => b.status === "Confirmed")
+          .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+        const meId = meResp?.playerId ?? null;
         setCourts(activeCourts);
         setPlayers(playersResp || []);
-        setCourtId(activeCourts[0]?.id ? String(activeCourts[0].id) : "");
+        setBookings(confirmedBookings);
+        setCurrentPlayerId(meId);
+        const firstBooking = confirmedBookings[0] ?? null;
+        setSelectedBookingId(firstBooking?.id ? String(firstBooking.id) : "");
+        setCourtId(firstBooking?.courtId ? String(firstBooking.courtId) : activeCourts[0]?.id ? String(activeCourts[0].id) : "");
+        if (meId && (playersResp || []).some((p) => p.playerId === meId)) {
+          setA1(String(meId));
+        }
       } catch (err) {
         if (mounted) setError(err.message || "Failed to load match form data");
       } finally {
@@ -289,12 +339,22 @@ function RecordMatchModal({ onClose, onRecorded }) {
     { value: "", label: "Select player..." },
     ...players.map((p) => ({ value: String(p.playerId), label: `${p.fullName} (ELO ${p.eloRating})` })),
   ];
+  const selectedBooking = bookings.find((b) => String(b.id) === selectedBookingId) ?? null;
+  const handleBookingChange = (bookingId) => {
+    setSelectedBookingId(bookingId);
+    const booking = bookings.find((b) => String(b.id) === bookingId);
+    if (booking) setCourtId(String(booking.courtId));
+  };
 
   const submit = async () => {
     setError("");
     const ids = [a1, a2, b1, b2].filter(Boolean);
     if (!courtId || ids.length !== 4 || new Set(ids).size !== 4) {
       setError("Pick 4 different players and a court.");
+      return;
+    }
+    if (currentPlayerId && !ids.includes(String(currentPlayerId))) {
+      setError("Include yourself in the match so your stats and ELO update after submission.");
       return;
     }
     if (Number(teamAScore) === Number(teamBScore)) {
@@ -305,16 +365,20 @@ function RecordMatchModal({ onClose, onRecorded }) {
     setSaving(true);
     try {
       const now = new Date();
-      const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), 0, 0));
-      const end = new Date(start.getTime() + 60 * 60 * 1000);
+      const manualStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), 0, 0));
+      const manualEnd = new Date(manualStart.getTime() + 60 * 60 * 1000);
+      const matchCourtId = selectedBooking ? selectedBooking.courtId : Number(courtId);
+      const matchBookingId = selectedBooking ? selectedBooking.id : null;
+      const matchStartTime = selectedBooking ? selectedBooking.startTime : manualStart.toISOString();
+      const matchEndTime = selectedBooking ? selectedBooking.endTime : manualEnd.toISOString();
 
       const match = await apiFetch("/matches", {
         method: "POST",
         body: JSON.stringify({
-          courtId: Number(courtId),
-          bookingId: null,
-          startTime: start.toISOString(),
-          endTime: end.toISOString(),
+          courtId: Number(matchCourtId),
+          bookingId: matchBookingId,
+          startTime: matchStartTime,
+          endTime: matchEndTime,
           teamAPlayerIds: [Number(a1), Number(a2)],
           teamBPlayerIds: [Number(b1), Number(b2)],
         }),
@@ -353,10 +417,25 @@ function RecordMatchModal({ onClose, onRecorded }) {
           <>
             {error && <div style={{ background: G.coralLight, border: `0.5px solid ${G.coral}`, borderRadius: 10, padding: "10px 12px", fontSize: 12, color: G.coral, marginBottom: 12 }}>{error}</div>}
 
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: G.hint, marginBottom: 6 }}>Booking</div>
+              <select value={selectedBookingId} onChange={(e) => handleBookingChange(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: `0.5px solid ${G.borderMed}`, fontFamily: "inherit", fontSize: 13 }}>
+                {bookings.map((b) => (
+                  <option key={b.id} value={String(b.id)}>
+                    {b.courtName || `Court ${b.courtId}`} - {formatShortDateTime(b.startTime)} to {formatTimeLabel(b.endTime)}
+                  </option>
+                ))}
+                <option value="">Manual court/time fallback</option>
+              </select>
+              {selectedBooking && (
+                <div style={{ fontSize: 11, color: G.hint, marginTop: 6 }}>Match will use this booking's court and time.</div>
+              )}
+            </div>
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
               <div>
                 <div style={{ fontSize: 11, color: G.hint, marginBottom: 6 }}>Court</div>
-                <select value={courtId} onChange={(e) => setCourtId(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: `0.5px solid ${G.borderMed}`, fontFamily: "inherit", fontSize: 13 }}>
+                <select value={courtId} onChange={(e) => setCourtId(e.target.value)} disabled={!!selectedBooking} style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: `0.5px solid ${G.borderMed}`, fontFamily: "inherit", fontSize: 13, opacity: selectedBooking ? 0.72 : 1 }}>
                   {courts.map((c) => (
                     <option key={c.id} value={String(c.id)}>{c.name} · {c.location}</option>
                   ))}
@@ -538,12 +617,15 @@ function DashboardPage({ user }) {
         recentMatches,
       });
 
-      // Check for newly completed matches without questionnaire
-      const reviewed   = loadPostgameResponses().map((r) => r.matchId);
-      const unreviewed = completedMatches.filter((m) => !reviewed.includes(m.id));
+      // Check for newly completed matches that were not reviewed or dismissed.
+      const reviewedOrDismissed = getReviewedOrDismissedPostgameIds(playerResp.playerId);
+      const unreviewed = completedMatches.filter((m) => !reviewedOrDismissed.has(String(m.id)));
       if (unreviewed.length > 0) {
         setPendingMatchId(unreviewed[unreviewed.length - 1].id);
         setShowQuestionnaire(true);
+      } else {
+        setPendingMatchId(null);
+        setShowQuestionnaire(false);
       }
 
       setNextBooking(upcoming ? {
@@ -564,9 +646,11 @@ function DashboardPage({ user }) {
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {
     window.addEventListener("booking-created", fetchData);
+    window.addEventListener("booking-cancelled", fetchData);
     window.addEventListener("match-recorded", fetchData);
     return () => {
       window.removeEventListener("booking-created", fetchData);
+      window.removeEventListener("booking-cancelled", fetchData);
       window.removeEventListener("match-recorded", fetchData);
     };
   }, [fetchData]);
@@ -580,10 +664,20 @@ function DashboardPage({ user }) {
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
       {showQuestionnaire && pendingMatchId && (
-        <PostGameModal
+          <PostGameModal
           matchId={pendingMatchId}
-          onClose={() => setShowQuestionnaire(false)}
-          onSave={() => { setShowQuestionnaire(false); window.dispatchEvent(new CustomEvent("radar-updated")); }}
+          playerId={playerData?.playerId}
+          onClose={() => {
+            markPostgameReviewDismissed(pendingMatchId, playerData?.playerId);
+            setShowQuestionnaire(false);
+            setPendingMatchId(null);
+          }}
+          onSave={() => {
+            markPostgameReviewDismissed(pendingMatchId, playerData?.playerId);
+            setShowQuestionnaire(false);
+            setPendingMatchId(null);
+            window.dispatchEvent(new CustomEvent("radar-updated"));
+          }}
         />
       )}
 
@@ -673,6 +767,7 @@ function DashboardPage({ user }) {
                     try {
                       await apiFetch(`/bookings/${nextBooking.id}`, { method: "DELETE" });
                       setNextBooking(null);
+                      window.dispatchEvent(new CustomEvent("booking-cancelled"));
                     } catch (err) {
                       alert(err.message || "Failed to cancel booking");
                     } finally {
@@ -702,7 +797,7 @@ function DashboardPage({ user }) {
 
 // ─── BOOKING PAGE ─────────────────────────────────────────────────────────────
 function BookingPage() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getTodayInputValue();
 
   const [step,             setStep]             = useState("location");
   const [selectedLocation, setSelectedLocation] = useState("");
@@ -741,7 +836,7 @@ function BookingPage() {
   const loadSlots = useCallback(async (location, date, courts) => {
     const filtered = courts.filter((c) => c.location === location && c.isActive !== false);
     setLocationCourts(filtered);
-    if (filtered.length === 0) { setAvailability({}); return; }
+    if (filtered.length === 0) { setAvailability({}); setMyBookings([]); setSelected({}); return; }
 
     setLoadingSlots(true);
     try {
@@ -760,17 +855,43 @@ function BookingPage() {
         avMap[courtId] = slots.map((s) => ({
           slot: formatTimeLabel(s.startTime),
           rawStart: s.startTime,
-          isAvailable: s.isAvailable,
+          rawEnd: s.endTime,
+          isAvailable: s.isAvailable && new Date(s.startTime) >= new Date(),
         }));
       });
       setAvailability(avMap);
       setMyBookings(myBk || []);
+      setSelected((prev) => {
+        const next = {};
+        Object.entries(prev).forEach(([courtId, slotSet]) => {
+          const stillAvailable = new Set(
+            (avMap[courtId] || [])
+              .filter((s) => s.isAvailable && slotSet?.has(s.slot))
+              .map((s) => s.slot)
+          );
+          if (stillAvailable.size > 0) next[courtId] = stillAvailable;
+        });
+        return next;
+      });
     } catch (err) {
       console.error("Availability error:", err);
     } finally {
       setLoadingSlots(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!selectedLocation || allCourts.length === 0) return;
+    const reload = () => loadSlots(selectedLocation, selectedDate, allCourts);
+    window.addEventListener("booking-created", reload);
+    window.addEventListener("booking-cancelled", reload);
+    window.addEventListener("match-recorded", reload);
+    return () => {
+      window.removeEventListener("booking-created", reload);
+      window.removeEventListener("booking-cancelled", reload);
+      window.removeEventListener("match-recorded", reload);
+    };
+  }, [selectedLocation, selectedDate, allCourts, loadSlots]);
 
   const handleLocationSelect = (loc) => {
     setSelectedLocation(loc);
@@ -780,9 +901,10 @@ function BookingPage() {
   };
 
   const handleDateChange = (date) => {
-    setSelectedDate(date);
+    const safeDate = date < today ? today : date;
+    setSelectedDate(safeDate);
     setSelected({});
-    if (selectedLocation) loadSlots(selectedLocation, date, allCourts);
+    if (selectedLocation) loadSlots(selectedLocation, safeDate, allCourts);
   };
 
   // ── Toggle slot ───────────────────────────────────────────────────────────
@@ -851,7 +973,7 @@ function BookingPage() {
         <SectionTitle title="Court Booking" sub="Choose a location in Cairo to see available courts" />
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
           <label style={{ fontSize: 13, color: G.muted, fontWeight: 500 }}>Select Date</label>
-          <input type="date" value={selectedDate} min={today} onChange={(e) => setSelectedDate(e.target.value)} style={{ padding: "8px 14px", borderRadius: 9, fontSize: 13, fontFamily: "inherit", border: `0.5px solid ${G.borderMed}`, background: G.card, color: G.text, outline: "none" }} />
+          <input type="date" value={selectedDate} min={today} onChange={(e) => handleDateChange(e.target.value)} style={{ padding: "8px 14px", borderRadius: 9, fontSize: 13, fontFamily: "inherit", border: `0.5px solid ${G.borderMed}`, background: G.card, color: G.text, outline: "none" }} />
         </div>
         {loadingCourts ? (
           <div style={{ color: G.muted, fontSize: 13 }}>Loading locations...</div>
@@ -986,9 +1108,12 @@ function BookingPage() {
                     const courtSlots  = availability[court.id] || [];
                     const slotInfo    = courtSlots.find((s) => s.slot === slot);
                     const isAvailable = slotInfo?.isAvailable ?? false;
-                    const isSelected = selected[court.id]?.has(slot) ?? false;
-                    const isMyBooking = myUpcomingHere.some(
-                      (b) => b.courtId === court.id && formatTimeLabel(b.startTime) === slot
+                    const isSelected = isAvailable && (selected[court.id]?.has(slot) ?? false);
+                    const isPastSlot = slotInfo ? new Date(slotInfo.rawStart) < new Date() : true;
+                    const isMyBooking = !!slotInfo && !isPastSlot && myBookings.some(
+                      (b) => b.status === "Confirmed" &&
+                        b.courtId === court.id &&
+                        overlapsTimeRange(slotInfo.rawStart, slotInfo.rawEnd, b.startTime, b.endTime)
                     );
 
                     let bg, border, color, cursor, label;
@@ -1043,19 +1168,29 @@ function MatchmakingPage({ user }) {
   const [requested, setRequested] = useState({});
   const [loading,   setLoading]   = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [me, all] = await Promise.all([apiFetch("/players/me"), apiFetch("/players")]);
-        setMyPlayer(me);
-        setPlayers((all || []).filter((p) => p.playerId !== me.playerId));
-      } catch (err) {
-        console.error("Matchmaking fetch error:", err);
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const fetchMatchmaking = useCallback(async () => {
+    try {
+      const [me, all] = await Promise.all([apiFetch("/players/me"), apiFetch("/players")]);
+      setMyPlayer(me);
+      setPlayers((all || []).filter((p) => p.playerId !== me.playerId));
+    } catch (err) {
+      console.error("Matchmaking fetch error:", err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => { fetchMatchmaking(); }, [fetchMatchmaking]);
+  useEffect(() => {
+    window.addEventListener("booking-created", fetchMatchmaking);
+    window.addEventListener("booking-cancelled", fetchMatchmaking);
+    window.addEventListener("match-recorded", fetchMatchmaking);
+    return () => {
+      window.removeEventListener("booking-created", fetchMatchmaking);
+      window.removeEventListener("booking-cancelled", fetchMatchmaking);
+      window.removeEventListener("match-recorded", fetchMatchmaking);
+    };
+  }, [fetchMatchmaking]);
 
   const initials = user?.fullName?.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase() || "ME";
 
@@ -1162,8 +1297,14 @@ function RankingsPage({ user }) {
 
   useEffect(() => { fetchRankings(); }, [fetchRankings]);
   useEffect(() => {
+    window.addEventListener("booking-created", fetchRankings);
+    window.addEventListener("booking-cancelled", fetchRankings);
     window.addEventListener("match-recorded", fetchRankings);
-    return () => window.removeEventListener("match-recorded", fetchRankings);
+    return () => {
+      window.removeEventListener("booking-created", fetchRankings);
+      window.removeEventListener("booking-cancelled", fetchRankings);
+      window.removeEventListener("match-recorded", fetchRankings);
+    };
   }, [fetchRankings]);
 
   const filtered = players.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
@@ -1229,9 +1370,10 @@ function AnalyticsPage({ user }) {
   const [showQModal,    setShowQModal]    = useState(false);
   const [showRecordMatch, setShowRecordMatch] = useState(false);
   const [postgameCount, setPostgameCount] = useState(0);
+  const analyticsMountedRef = useRef(false);
 
   const loadRadar = useCallback(() => {
-    const saved = loadRadarData();
+    const saved = loadRadarData(playerData?.playerId);
     if (saved) {
       setRadarData(saved);
       setHasRadarData(true);
@@ -1240,8 +1382,8 @@ function AnalyticsPage({ user }) {
       setRadarData(RADAR_SKILLS.map((s) => ({ skill: s.label, you: 0, avg: 55 })));
       setHasRadarData(false);
     }
-    setPostgameCount(loadPostgameResponses().length);
-  }, []);
+    setPostgameCount(loadPostgameResponses(playerData?.playerId).length);
+  }, [playerData?.playerId]);
 
   useEffect(() => {
     loadRadar();
@@ -1249,9 +1391,7 @@ function AnalyticsPage({ user }) {
     return () => window.removeEventListener("radar-updated", loadRadar);
   }, [loadRadar]);
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
+  const fetchAnalytics = useCallback(async () => {
       try {
         const [playerResp, matchesResp] = await Promise.all([apiFetch("/players/me"), apiFetch("/matches")]);
         const completed = (matchesResp || [])
@@ -1297,7 +1437,7 @@ function AnalyticsPage({ user }) {
         let toughestRival = "—", toughestRecord = "—", minRate = 2;
         rivalMap.forEach((v, name) => { if (v.total < 2) return; const rate = v.wins / v.total; if (rate < minRate) { minRate = rate; toughestRival = name; toughestRecord = `${v.wins}W ${v.total - v.wins}L`; } });
 
-        if (mounted) {
+        if (analyticsMountedRef.current) {
           setPlayerData(playerResp);
           setMatchHistory(summaries);
           setEloStats({ avgGain, streak });
@@ -1306,17 +1446,30 @@ function AnalyticsPage({ user }) {
         }
       } catch (err) {
         console.error("Analytics fetch error:", err);
-        if (mounted) setLoading(false);
+        if (analyticsMountedRef.current) setLoading(false);
       }
-    })();
-    return () => { mounted = false; };
   }, []);
+
+  useEffect(() => {
+    analyticsMountedRef.current = true;
+    fetchAnalytics();
+    window.addEventListener("booking-created", fetchAnalytics);
+    window.addEventListener("booking-cancelled", fetchAnalytics);
+    window.addEventListener("match-recorded", fetchAnalytics);
+    return () => {
+      analyticsMountedRef.current = false;
+      window.removeEventListener("booking-created", fetchAnalytics);
+      window.removeEventListener("booking-cancelled", fetchAnalytics);
+      window.removeEventListener("match-recorded", fetchAnalytics);
+    };
+  }, [fetchAnalytics]);
 
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
       {showQModal && (
         <PostGameModal
           matchId={`manual-${Date.now()}`}
+          playerId={playerData?.playerId}
           onClose={() => setShowQModal(false)}
           onSave={(radar) => { setRadarData(radar); setHasRadarData(true); setShowQModal(false); setPostgameCount(c => c + 1); }}
         />
@@ -1438,7 +1591,7 @@ function AnalyticsPage({ user }) {
             <div style={{ ...styles.card, marginTop: 16 }}>
               <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 12 }}>Review History</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {loadPostgameResponses().slice(-5).reverse().map((r, i) => (
+                {loadPostgameResponses(playerData?.playerId).slice(-5).reverse().map((r, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: G.surface, borderRadius: 9 }}>
                     <div style={{ width: 32, height: 32, borderRadius: "50%", background: G.greenLight, color: G.greenDark, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>📝</div>
                     <div style={{ flex: 1 }}>
@@ -1465,34 +1618,47 @@ function BookingDetailsPage({ bookingId, onBack }) {
   const [loading, setLoading] = useState(true);
   const [booking, setBooking] = useState(null);
   const [court, setCourt] = useState(null);
+  const detailsMountedRef = useRef(false);
+
+  const fetchBookingDetails = useCallback(async () => {
+    try {
+      const bookings = await apiFetch("/bookings/my");
+      const found = (bookings || []).find((b) => b.id === bookingId) ?? null;
+      if (!found) {
+        if (detailsMountedRef.current) {
+          setBooking(null);
+          setCourt(null);
+        }
+        return;
+      }
+
+      const courts = await apiFetch("/courts");
+      const foundCourt = (courts || []).find((c) => c.id === found.courtId) ?? null;
+
+      if (detailsMountedRef.current) {
+        setBooking(found);
+        setCourt(foundCourt);
+      }
+    } catch (err) {
+      console.error("Booking details error:", err);
+    } finally {
+      if (detailsMountedRef.current) setLoading(false);
+    }
+  }, [bookingId]);
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const bookings = await apiFetch("/bookings/my");
-        const found = (bookings || []).find((b) => b.id === bookingId) ?? null;
-        if (!found) {
-          if (mounted) setBooking(null);
-          return;
-        }
-
-        const courts = await apiFetch("/courts");
-        const foundCourt = (courts || []).find((c) => c.id === found.courtId) ?? null;
-
-        if (mounted) {
-          setBooking(found);
-          setCourt(foundCourt);
-        }
-      } catch (err) {
-        console.error("Booking details error:", err);
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-
-    return () => { mounted = false; };
-  }, [bookingId]);
+    detailsMountedRef.current = true;
+    fetchBookingDetails();
+    window.addEventListener("booking-created", fetchBookingDetails);
+    window.addEventListener("booking-cancelled", fetchBookingDetails);
+    window.addEventListener("match-recorded", fetchBookingDetails);
+    return () => {
+      detailsMountedRef.current = false;
+      window.removeEventListener("booking-created", fetchBookingDetails);
+      window.removeEventListener("booking-cancelled", fetchBookingDetails);
+      window.removeEventListener("match-recorded", fetchBookingDetails);
+    };
+  }, [fetchBookingDetails]);
 
   if (loading) {
     return <div style={{ padding: "28px 32px", color: G.muted }}>Loading booking...</div>;
@@ -1588,9 +1754,11 @@ function PlayerLayout() {
   useEffect(() => { refreshSidebar(); }, [refreshSidebar]);
   useEffect(() => {
     window.addEventListener("booking-created", refreshSidebar);
+    window.addEventListener("booking-cancelled", refreshSidebar);
     window.addEventListener("match-recorded", refreshSidebar);
     return () => {
       window.removeEventListener("booking-created", refreshSidebar);
+      window.removeEventListener("booking-cancelled", refreshSidebar);
       window.removeEventListener("match-recorded", refreshSidebar);
     };
   }, [refreshSidebar]);

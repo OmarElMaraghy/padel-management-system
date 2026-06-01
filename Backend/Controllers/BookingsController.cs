@@ -103,7 +103,15 @@ public class BookingsController : ControllerBase
             return BadRequest("Court is not active.");
         }
 
-        if (request.EndTime <= request.StartTime)
+        var startTime = NormalizeToUtc(request.StartTime);
+        var endTime = NormalizeToUtc(request.EndTime);
+
+        if (startTime < DateTime.UtcNow)
+        {
+            return BadRequest("Booking start time cannot be in the past.");
+        }
+
+        if (endTime <= startTime)
         {
             return BadRequest("End time must be after start time.");
         }
@@ -111,8 +119,8 @@ public class BookingsController : ControllerBase
         // Rule 1: Start and end must be exactly on the hour.
         // Examples allowed: 18:00, 19:00, 20:00
         // Examples rejected: 18:30, 19:15, 20:45
-        if (request.StartTime.Minute != 0 || request.StartTime.Second != 0 || request.StartTime.Millisecond != 0 ||
-            request.EndTime.Minute != 0 || request.EndTime.Second != 0 || request.EndTime.Millisecond != 0)
+        if (startTime.Minute != 0 || startTime.Second != 0 || startTime.Millisecond != 0 ||
+            endTime.Minute != 0 || endTime.Second != 0 || endTime.Millisecond != 0)
         {
             return BadRequest("Booking start and end times must be exactly on the hour.");
         }
@@ -120,7 +128,7 @@ public class BookingsController : ControllerBase
         // Rule 2: Duration must be whole hours only.
         // Examples allowed: 1 hour, 2 hours, 3 hours
         // Examples rejected: 30 minutes, 1.5 hours, 2.5 hours
-        var duration = request.EndTime - request.StartTime;
+        var duration = endTime - startTime;
 
         if (duration.TotalHours < 1 || duration.TotalHours % 1 != 0)
         {
@@ -130,8 +138,8 @@ public class BookingsController : ControllerBase
         var hasConflict = await _context.Bookings.AnyAsync(b =>
             b.CourtId == request.CourtId &&
             b.Status == "Confirmed" &&
-            request.StartTime < b.EndTime &&
-            request.EndTime > b.StartTime
+            startTime < b.EndTime &&
+            endTime > b.StartTime
         );
 
         if (hasConflict)
@@ -143,8 +151,8 @@ public class BookingsController : ControllerBase
         {
             CourtId = request.CourtId,
             UserId = userId,
-            StartTime = request.StartTime,
-            EndTime = request.EndTime,
+            StartTime = startTime,
+            EndTime = endTime,
             Status = "Confirmed"
         };
 
@@ -204,5 +212,20 @@ public class BookingsController : ControllerBase
         await _context.SaveChangesAsync();
 
         return Ok("Booking cancelled successfully.");
+    }
+
+    private static DateTime NormalizeToUtc(DateTime value)
+    {
+        if (value.Kind == DateTimeKind.Utc)
+        {
+            return value;
+        }
+
+        if (value.Kind == DateTimeKind.Local)
+        {
+            return value.ToUniversalTime();
+        }
+
+        return DateTime.SpecifyKind(value, DateTimeKind.Utc);
     }
 }
