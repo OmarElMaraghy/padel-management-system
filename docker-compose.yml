@@ -5,11 +5,11 @@ services:
     image: postgres:15
     container_name: padel-db
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: padel
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: PadelBackend123!
+      POSTGRES_DB: PadelDb
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 

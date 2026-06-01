@@ -132,6 +132,12 @@ namespace PadelBackend.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<int?>("EloAfterMatch")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("EloBeforeMatch")
+                        .HasColumnType("integer");
+
                     b.Property<int>("MatchId")
                         .HasColumnType("integer");
 

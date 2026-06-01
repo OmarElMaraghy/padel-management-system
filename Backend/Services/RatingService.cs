@@ -21,7 +21,9 @@ public class RatingService
 
         foreach (var matchPlayer in matchPlayers)
         {
+            var eloBeforeMatch = matchPlayer.Player.EloRating;
             matchPlayer.Player.TotalMatches++;
+            matchPlayer.EloBeforeMatch = eloBeforeMatch;
 
             if (matchPlayer.Team == winnerTeam)
             {
@@ -33,6 +35,8 @@ public class RatingService
                 matchPlayer.Player.Losses++;
                 matchPlayer.Player.EloRating = Math.Max(0, matchPlayer.Player.EloRating - 20);
             }
+
+            matchPlayer.EloAfterMatch = matchPlayer.Player.EloRating;
         }
 
         await _context.SaveChangesAsync();

@@ -1,9 +1,11 @@
 import { Routes, Route, Navigate } from "react-router-dom";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "./context/AuthContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import SignIn from "./pages/SignIn";
 import SignUp from "./pages/SignUp";
+import PlayerProfile from "./pages/PlayerProfile";
+import { apiFetch } from "./lib/api";
 
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, RadarChart, Radar, PolarGrid, PolarAngleAxis } from "recharts";
 
@@ -97,8 +99,83 @@ function SectionTitle({ title, sub }) {
   );
 }
 
+function formatShortDate(value) {
+  return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function formatShortDateTime(value) {
+  return new Date(value).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatTimeLabel(value) {
+  return new Date(value).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+  });
+}
+
+function getPlayerEntry(match, playerId) {
+  return match?.players?.find((player) => player.playerId === playerId) ?? null;
+}
+
+function buildMatchSummary(match, playerId) {
+  const playerEntry = getPlayerEntry(match, playerId);
+  if (!playerEntry || match.status !== "Completed") {
+    return null;
+  }
+
+  const teammates = (match.players ?? []).filter(
+    (player) => player.team === playerEntry.team && player.playerId !== playerId
+  );
+  const opponents = (match.players ?? []).filter((player) => player.team !== playerEntry.team);
+  const eloChange = (playerEntry.eloAfterMatch ?? playerEntry.eloRating) - (playerEntry.eloBeforeMatch ?? playerEntry.eloRating);
+  const didWin = match.winnerTeam === playerEntry.team;
+
+  return {
+    id: match.id,
+    date: formatShortDate(match.startTime),
+    dateTime: formatShortDateTime(match.startTime),
+    partner: teammates.map((player) => player.fullName).join(" & ") || "Solo",
+    opponent: opponents.map((player) => player.fullName).join(" & ") || "Unknown",
+    score:
+      typeof match.teamAScore === "number" && typeof match.teamBScore === "number"
+        ? `${match.teamAScore}-${match.teamBScore}`
+        : "Score pending",
+    result: didWin ? "W" : "L",
+    eloChange: `${eloChange >= 0 ? "+" : ""}${eloChange}`,
+    eloAfterMatch: playerEntry.eloAfterMatch ?? playerEntry.eloRating,
+  };
+}
+
+function buildMonthlyResults(matches, playerId) {
+  const monthlyMap = new Map();
+
+  matches.forEach((match) => {
+    const summary = buildMatchSummary(match, playerId);
+    if (!summary) {
+      return;
+    }
+
+    const month = new Date(match.startTime).toLocaleDateString("en-US", { month: "short" });
+    const current = monthlyMap.get(month) ?? { month, wins: 0, losses: 0 };
+    if (summary.result === "W") {
+      current.wins += 1;
+    } else {
+      current.losses += 1;
+    }
+    monthlyMap.set(month, current);
+  });
+
+  return Array.from(monthlyMap.values());
+}
+
 // ─── LANDING PAGE ─────────────────────────────────────────────────────────────
-import { useEffect } from "react";
 import { useNavigate as useNav } from "react-router-dom";
 
 function LandingPage() {
@@ -181,25 +258,135 @@ function LandingPage() {
 }
 
 // ─── DASHBOARD PAGE ──────────────────────────────────────────────────────────
-function DashboardPage({ user }) {
+function LegacyDashboardPage({ user }) {
   const firstName = user?.fullName?.split(" ")[0] || "Player";
+  const [playerData, setPlayerData] = useState(null);
+  const [allMatches, setAllMatches] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [nextBooking, setNextBooking] = useState(null);
+  const [chartData, setChartData] = useState({ eloHistory: [], winData: [], recentMatches: [] });
+  const [userRanking, setUserRanking] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchData = async () => {
+      try {
+        // Fetch current player profile
+        const playerResp = await apiFetch("/players/me");
+        if (mounted) setPlayerData(playerResp);
+
+        // Fetch all matches to build history and ELO progression
+        const matchesResp = await apiFetch("/matches");
+        if (mounted) {
+          setAllMatches(matchesResp || []);
+          
+          // Filter current user's matches and build chart data
+          const userMatches = (matchesResp || []).filter(m => 
+            m.matchPlayers?.some(mp => mp.playerId === playerResp.playerId)
+          ).sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+          // Build ELO progression (show last 12 matches)
+          const eloHist = userMatches.slice(-12).map((m, i) => ({
+            match: `M${i + 1}`,
+            elo: playerResp.eloRating - (userMatches.length - i - 1) * 20 + i * 15 // Simplified progression
+          }));
+
+          // Build recent matches (last 4)
+          const recent = userMatches.slice(-4).reverse().map(m => {
+            const isWin = Math.random() > 0.3; // Placeholder logic
+            return {
+              date: new Date(m.startTime).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+              opponent: m.matchPlayers?.find(mp => mp.playerId !== playerResp.playerId)?.player?.user?.fullName || "Unknown",
+              score: isWin ? "6-4, 6-3" : "4-6, 3-6",
+              result: isWin ? "W" : "L",
+              eloChange: isWin ? "+18" : "-14"
+            };
+          });
+
+          // Build monthly results (aggregate by month)
+          const monthlyMap = {};
+          userMatches.forEach(m => {
+            const month = new Date(m.startTime).toLocaleDateString("en-US", { month: "short" });
+            if (!monthlyMap[month]) monthlyMap[month] = { wins: 0, losses: 0 };
+            monthlyMap[month].wins += Math.random() > 0.3 ? 1 : 0;
+            monthlyMap[month].losses += Math.random() > 0.3 ? 0 : 1;
+          });
+          const winHist = Object.entries(monthlyMap).map(([month, data]) => ({ month, ...data }));
+
+          if (mounted) {
+            setChartData({
+              eloHistory: eloHist,
+              winData: winHist.length > 0 ? winHist : [{ month: "Apr", wins: 4, losses: 1 }],
+              recentMatches: recent
+            });
+          }
+        }
+
+        // Fetch all players for leaderboard and ranking
+        const playersResp = await apiFetch("/players");
+        if (mounted) {
+          const sorted = (playersResp || []).sort((a, b) => b.eloRating - a.eloRating);
+          setLeaderboard(sorted.slice(0, 5));
+          
+          // Find user's ranking
+          const rank = sorted.findIndex(p => p.playerId === playerResp.playerId) + 1;
+          setUserRanking(rank > 0 ? rank : "—");
+        }
+
+        // Fetch next booking
+        const bookingsResp = await apiFetch("/bookings/my");
+        if (mounted && bookingsResp && bookingsResp.length > 0) {
+          const upcoming = bookingsResp.find(b => new Date(b.startTime) > new Date());
+          if (upcoming) {
+            setNextBooking({
+              court: `Court ${upcoming.courtId}`,
+              time: new Date(upcoming.startTime).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+              vs: "Matchmaking scheduled"
+            });
+          }
+        }
+
+        if (mounted) setLoading(false);
+      } catch (err) {
+        console.error("Failed to fetch dashboard data:", err);
+        if (mounted) setLoading(false);
+      }
+    };
+
+    fetchData();
+    return () => { mounted = false; };
+  }, []);
+
+  if (loading) {
+    return <div style={{ padding: "28px 32px", color: G.muted }}>Loading dashboard...</div>;
+  }
+
+  const winRate = playerData?.totalMatches > 0 
+    ? Math.round((playerData.wins / playerData.totalMatches) * 100) 
+    : 0;
+  const eloDisplay = playerData?.eloRating?.toLocaleString() || "—";
+  const matchesDisplay = playerData?.totalMatches || "0";
+  const winsDisplay = playerData?.wins || "0";
+  const lossesDisplay = playerData?.losses || "0";
+
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
       <SectionTitle title={`Welcome back, ${firstName} 👋`} sub="Here's your performance snapshot" />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
-        <StatCard label="Current ELO" value="1,400" sub="↑ +18 last match" />
-        <StatCard label="Win Rate" value="61%" sub="14W · 9L this season" color={G.green} />
-        <StatCard label="Ranking" value="#12" sub="of 84 players" color={G.amber} />
-        <StatCard label="Matches" value="23" sub="this season" color={G.greenDark} />
+        <StatCard label="Current ELO" value={eloDisplay} sub="Latest from matches" />
+        <StatCard label="Win Rate" value={`${winRate}%`} sub={`${winsDisplay}W · ${lossesDisplay}L`} color={G.green} />
+        <StatCard label="Ranking" value={`#${userRanking}`} sub={`of ${leaderboard.length + 5} players`} color={G.amber} />
+        <StatCard label="Matches" value={matchesDisplay} sub="all time" color={G.greenDark} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginBottom: 16 }}>
         <div style={styles.card}>
           <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 16 }}>ELO Progression</div>
           <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={eloHistory}>
+            <LineChart data={chartData.eloHistory}>
               <CartesianGrid strokeDasharray="3 3" stroke={G.border} />
               <XAxis dataKey="match" tick={{ fontSize: 11, fill: G.hint }} />
-              <YAxis domain={[1180, 1450]} tick={{ fontSize: 11, fill: G.hint }} />
+              <YAxis tick={{ fontSize: 11, fill: G.hint }} />
               <Tooltip contentStyle={{ background: G.card, border: `0.5px solid ${G.border}`, borderRadius: 8, fontSize: 12 }} />
               <Line type="monotone" dataKey="elo" stroke={G.green} strokeWidth={2.5} dot={false} activeDot={{ r: 5, fill: G.green }} />
             </LineChart>
@@ -208,11 +395,11 @@ function DashboardPage({ user }) {
         <div style={styles.card}>
           <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 14 }}>Recent Matches</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {matchHistory.map((m, i) => (
+            {chartData.recentMatches.slice(0, 4).map((m, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ width: 28, height: 28, borderRadius: "50%", background: m.result === "W" ? G.greenLight : G.coralLight, color: m.result === "W" ? G.greenDark : G.coral, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{m.result}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: G.accent, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>vs {m.vs.split("&")[0].trim()}</div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: G.accent, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>vs {m.opponent}</div>
                   <div style={{ fontSize: 11, color: G.hint }}>{m.date} · {m.score}</div>
                 </div>
                 <div style={{ fontSize: 12, fontWeight: 600, color: m.result === "W" ? G.green : G.coral, flexShrink: 0 }}>{m.eloChange}</div>
@@ -225,7 +412,7 @@ function DashboardPage({ user }) {
         <div style={styles.card}>
           <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 16 }}>Monthly Results</div>
           <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={winData} barSize={14}>
+            <BarChart data={chartData.winData} barSize={14}>
               <CartesianGrid strokeDasharray="3 3" stroke={G.border} />
               <XAxis dataKey="month" tick={{ fontSize: 11, fill: G.hint }} />
               <YAxis tick={{ fontSize: 11, fill: G.hint }} />
@@ -237,15 +424,21 @@ function DashboardPage({ user }) {
         </div>
         <div style={styles.card}>
           <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 14 }}>Next Booking</div>
-          <div style={{ background: G.accent, borderRadius: 12, padding: "18px 20px", marginBottom: 14 }}>
-            <div style={{ fontSize: 11, color: G.greenMid, marginBottom: 4 }}>TOMORROW</div>
-            <div style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 700, color: "white", marginBottom: 2 }}>Court A · 10:00 AM</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Matchmaking vs. Ahmed M. & Tarek B.</div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button style={{ ...styles.btnGhost, flex: 1, fontSize: 12 }}>Reschedule</button>
-            <button style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-          </div>
+          {nextBooking ? (
+            <>
+              <div style={{ background: G.accent, borderRadius: 12, padding: "18px 20px", marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: G.greenMid, marginBottom: 4 }}>UPCOMING</div>
+                <div style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 700, color: "white", marginBottom: 2 }}>{nextBooking.court} · {nextBooking.time}</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>{nextBooking.vs}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...styles.btnGhost, flex: 1, fontSize: 12 }}>Reschedule</button>
+                <button style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+              </div>
+            </>
+          ) : (
+            <div style={{ color: G.muted, fontSize: 13 }}>No upcoming bookings</div>
+          )}
         </div>
       </div>
     </div>
@@ -253,10 +446,221 @@ function DashboardPage({ user }) {
 }
 
 // ─── BOOKING PAGE ─────────────────────────────────────────────────────────────
-function BookingPage() {
+function DashboardPage({ user }) {
+  const firstName = user?.fullName?.split(" ")[0] || "Player";
+  const [playerData, setPlayerData] = useState(null);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [nextBooking, setNextBooking] = useState(null);
+  const [chartData, setChartData] = useState({ eloHistory: [], winData: [], recentMatches: [] });
+  const [userRanking, setUserRanking] = useState(null);
+  const [totalPlayers, setTotalPlayers] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [bookingActionLoading, setBookingActionLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const fetchData = async () => {
+      try {
+        const [playerResp, matchesResp, playersResp, bookingsResp] = await Promise.all([
+          apiFetch("/players/me"),
+          apiFetch("/matches"),
+          apiFetch("/players"),
+          apiFetch("/bookings/my"),
+        ]);
+
+        const matches = matchesResp || [];
+        const completedMatches = matches
+          .filter((match) => match.status === "Completed" && getPlayerEntry(match, playerResp.playerId))
+          .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+        const eloHistoryPoints = completedMatches.slice(-12).map((match, index) => {
+          const playerEntry = getPlayerEntry(match, playerResp.playerId);
+          return {
+            match: `M${index + 1}`,
+            date: formatShortDate(match.startTime),
+            elo: playerEntry?.eloAfterMatch ?? playerEntry?.eloRating ?? playerResp.eloRating,
+          };
+        });
+        const recentMatches = completedMatches
+          .slice(-4)
+          .reverse()
+          .map((match) => buildMatchSummary(match, playerResp.playerId))
+          .filter(Boolean);
+        const sortedPlayers = (playersResp || []).slice().sort((a, b) => b.eloRating - a.eloRating);
+        const rank = sortedPlayers.findIndex((player) => player.playerId === playerResp.playerId) + 1;
+        const upcoming = (bookingsResp || [])
+          .filter((booking) => booking.status === "Confirmed" && new Date(booking.startTime) > new Date())
+          .sort((a, b) => new Date(a.startTime) - new Date(b.startTime))[0];
+        const relatedUpcomingMatch = upcoming
+          ? matches.find((match) => match.bookingId === upcoming.id && new Date(match.startTime) > new Date())
+          : null;
+
+        if (!mounted) {
+          return;
+        }
+
+        setPlayerData(playerResp);
+        setLeaderboard(sortedPlayers.slice(0, 5));
+        setTotalPlayers(sortedPlayers.length);
+        setUserRanking(rank > 0 ? rank : "—");
+        setChartData({
+          eloHistory:
+            eloHistoryPoints.length > 0
+              ? eloHistoryPoints
+              : [{ match: "Start", date: "No results yet", elo: playerResp.eloRating }],
+          winData: buildMonthlyResults(completedMatches, playerResp.playerId),
+          recentMatches,
+        });
+        setNextBooking(
+          upcoming
+            ? {
+                id: upcoming.id,
+                court: upcoming.courtName || `Court ${upcoming.courtId}`,
+                dateTime: formatShortDateTime(upcoming.startTime),
+                time: new Date(upcoming.startTime).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+                vs: relatedUpcomingMatch ? `Scheduled match on ${relatedUpcomingMatch.courtName || upcoming.courtName}` : "Court reservation confirmed",
+              }
+            : null
+        );
+        setLoading(false);
+      } catch (err) {
+        console.error("Failed to fetch dashboard data:", err);
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchData();
+    return () => { mounted = false; };
+  }, []);
+
+  if (loading) {
+    return <div style={{ padding: "28px 32px", color: G.muted }}>Loading dashboard...</div>;
+  }
+
+  const winRate = playerData?.totalMatches > 0
+    ? Math.round((playerData.wins / playerData.totalMatches) * 100)
+    : 0;
+  const eloDisplay = playerData?.eloRating?.toLocaleString() || "—";
+  const matchesDisplay = playerData?.totalMatches || "0";
+  const winsDisplay = playerData?.wins || "0";
+  const lossesDisplay = playerData?.losses || "0";
+
+  return (
+    <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
+      <SectionTitle title={`Welcome back, ${firstName} 👋`} sub="Here's your performance snapshot" />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
+        <StatCard label="Current ELO" value={eloDisplay} sub="Latest from matches" />
+        <StatCard label="Win Rate" value={`${winRate}%`} sub={`${winsDisplay}W · ${lossesDisplay}L`} color={G.green} />
+        <StatCard label="Ranking" value={`#${userRanking}`} sub={`of ${totalPlayers || leaderboard.length} players`} color={G.amber} />
+        <StatCard label="Matches" value={matchesDisplay} sub="all time" color={G.greenDark} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginBottom: 16 }}>
+        <div style={styles.card}>
+          <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 16 }}>ELO Progression</div>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={chartData.eloHistory}>
+              <CartesianGrid strokeDasharray="3 3" stroke={G.border} />
+              <XAxis dataKey="match" tick={{ fontSize: 11, fill: G.hint }} />
+              <YAxis tick={{ fontSize: 11, fill: G.hint }} />
+              <Tooltip contentStyle={{ background: G.card, border: `0.5px solid ${G.border}`, borderRadius: 8, fontSize: 12 }} />
+              <Line type="monotone" dataKey="elo" stroke={G.green} strokeWidth={2.5} dot={false} activeDot={{ r: 5, fill: G.green }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={styles.card}>
+          <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 14 }}>Recent Matches</div>
+          {chartData.recentMatches.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {chartData.recentMatches.slice(0, 4).map((match, index) => (
+                <div key={match.id ?? index} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: "50%", background: match.result === "W" ? G.greenLight : G.coralLight, color: match.result === "W" ? G.greenDark : G.coral, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{match.result}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: G.accent, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>vs {match.opponent}</div>
+                    <div style={{ fontSize: 11, color: G.hint }}>{match.date} · {match.score}</div>
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: match.result === "W" ? G.green : G.coral, flexShrink: 0 }}>{match.eloChange}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: G.muted, fontSize: 13 }}>No completed matches yet</div>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={styles.card}>
+          <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 16 }}>Monthly Results</div>
+          {chartData.winData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={160}>
+              <BarChart data={chartData.winData} barSize={14}>
+                <CartesianGrid strokeDasharray="3 3" stroke={G.border} />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: G.hint }} />
+                <YAxis tick={{ fontSize: 11, fill: G.hint }} />
+                <Tooltip contentStyle={{ background: G.card, border: `0.5px solid ${G.border}`, borderRadius: 8, fontSize: 12 }} />
+                <Bar dataKey="wins" fill={G.green} radius={[4, 4, 0, 0]} name="Wins" />
+                <Bar dataKey="losses" fill={G.coralLight} radius={[4, 4, 0, 0]} name="Losses" />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div style={{ color: G.muted, fontSize: 13 }}>Monthly results will appear after your first completed match.</div>
+          )}
+        </div>
+        <div style={styles.card}>
+          <div style={{ fontWeight: 600, color: G.accent, fontSize: 14, marginBottom: 14 }}>Next Booking</div>
+          {nextBooking ? (
+            <>
+              <div style={{ background: G.accent, borderRadius: 12, padding: "18px 20px", marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: G.greenMid, marginBottom: 4 }}>UPCOMING</div>
+                <div style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 700, color: "white", marginBottom: 2 }}>{nextBooking.court} · {nextBooking.time}</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginBottom: 2 }}>{nextBooking.dateTime}</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>{nextBooking.vs}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...styles.btnGhost, flex: 1, fontSize: 12 }} onClick={() => window.dispatchEvent(new CustomEvent("padel:navigate-booking"))}>Manage Booking</button>
+                <button
+                  onClick={async () => {
+                    try {
+                      setBookingActionLoading(true);
+                      await apiFetch(`/bookings/${nextBooking.id}`, { method: "DELETE" });
+                      setNextBooking(null);
+                    } catch (err) {
+                      alert(err.message || "Failed to cancel booking");
+                    } finally {
+                      setBookingActionLoading(false);
+                    }
+                  }}
+                  disabled={bookingActionLoading}
+                  style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: bookingActionLoading ? "wait" : "pointer", fontFamily: "inherit", opacity: bookingActionLoading ? 0.7 : 1 }}
+                >
+                  {bookingActionLoading ? "Cancelling..." : "Cancel"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div style={{ color: G.muted, fontSize: 13 }}>No upcoming bookings</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LegacyBookingPage() {
   const [selected, setSelected] = useState({});
+  const [remoteCourts, setRemoteCourts] = useState(null);
+  const [creating, setCreating] = useState(false);
   const toggle = (courtId, slot) => { const key = `${courtId}-${slot}`; setSelected(s => ({ ...s, [key]: !s[key] })); };
   const selectedCount = Object.values(selected).filter(Boolean).length;
+
+  useEffect(() => {
+    let mounted = true;
+    apiFetch("/courts")
+      .then(data => { if (mounted) setRemoteCourts(data); })
+      .catch(() => { /* keep using mock data if request fails */ });
+    return () => { mounted = false; };
+  }, []);
 
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
@@ -264,7 +668,42 @@ function BookingPage() {
         <SectionTitle title="Court Booking" sub="Select a court and time slot to reserve" />
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <div style={{ fontSize: 12, color: G.muted }}>Today — May 18, 2026</div>
-          {selectedCount > 0 && <button style={{ ...styles.btn, fontSize: 13 }}>Confirm {selectedCount} booking{selectedCount > 1 ? "s" : ""} →</button>}
+          {selectedCount > 0 && (
+            <button
+              onClick={async () => {
+                // Create one-hour bookings for each selected slot
+                const items = Object.entries(selected).filter(([, v]) => v).map(([k]) => {
+                  const [courtIdStr, slot] = k.split("-");
+                  return { courtId: Number(courtIdStr), slot };
+                });
+                setCreating(true);
+                try {
+                  for (const it of items) {
+                    // Build start/end for today using slot like "10:00"
+                    const [hours, mins] = it.slot.split(":").map(Number);
+                    const now = new Date();
+                    const start = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), hours, mins, 0));
+                    const end = new Date(start.getTime() + 60 * 60 * 1000);
+                    await apiFetch(`/bookings`, {
+                      method: "POST",
+                      body: JSON.stringify({ courtId: it.courtId, startTime: start.toISOString(), endTime: end.toISOString() }),
+                    });
+                  }
+                  // Clear selections
+                  setSelected({});
+                  alert("Booking(s) created successfully");
+                } catch (err) {
+                  alert(err.message || "Failed to create booking");
+                } finally {
+                  setCreating(false);
+                }
+              }}
+              style={{ ...styles.btn, fontSize: 13 }}
+              disabled={creating}
+            >
+              {creating ? "Creating..." : `Confirm ${selectedCount} booking${selectedCount > 1 ? "s" : ""} →`}
+            </button>
+          )}
         </div>
       </div>
       <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
@@ -276,7 +715,7 @@ function BookingPage() {
         ))}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {courts.map(court => (
+        {(remoteCourts ?? courts).map(court => (
           <div key={court.id} style={styles.card}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
               <div style={{ fontWeight: 600, color: G.accent, fontSize: 15 }}>{court.name}</div>
@@ -299,6 +738,150 @@ function BookingPage() {
 }
 
 // ─── MATCHMAKING PAGE ─────────────────────────────────────────────────────────
+function BookingPage() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [selected, setSelected] = useState({});
+  const [remoteCourts, setRemoteCourts] = useState(null);
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const toggle = (courtId, slot) => {
+    const key = `${courtId}-${slot}`;
+    setSelected((state) => ({ ...state, [key]: !state[key] }));
+  };
+
+  const loadAvailability = async () => {
+    setLoading(true);
+    try {
+      const courtsResp = await apiFetch("/courts");
+      const availability = await Promise.all(
+        (courtsResp || []).map(async (court) => {
+          const slotsResp = await apiFetch(`/courts/${court.id}/availability?date=${selectedDate}`);
+          const slotLabels = (slotsResp || []).map((slot) => formatTimeLabel(slot.startTime));
+          const busySlots = (slotsResp || [])
+            .filter((slot) => !slot.isAvailable)
+            .map((slot) => formatTimeLabel(slot.startTime));
+
+          return {
+            id: court.id,
+            name: court.name,
+            slots: slotLabels,
+            busy: busySlots,
+          };
+        })
+      );
+
+      setRemoteCourts(availability);
+    } catch (err) {
+      console.error("Failed to load booking availability:", err);
+      setRemoteCourts(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAvailability();
+  }, [selectedDate]);
+
+  const selectedItems = Object.entries(selected).filter(([, isSelected]) => isSelected);
+  const selectedCount = selectedItems.length;
+
+  return (
+    <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
+        <SectionTitle title="Court Booking" sub="Live court availability from the database" />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(event) => {
+              setSelected({});
+              setSelectedDate(event.target.value);
+            }}
+            style={{ padding: "8px 12px", borderRadius: 9, fontSize: 13, fontFamily: "inherit", border: `0.5px solid ${G.borderMed}`, background: G.card, color: G.text }}
+          />
+          {selectedCount > 0 && (
+            <button
+              onClick={async () => {
+                setCreating(true);
+                try {
+                  for (const [key] of selectedItems) {
+                    const [courtIdStr, slot] = key.split("-");
+                    const [hours, mins] = slot.split(":").map(Number);
+                    const start = new Date(`${selectedDate}T00:00:00.000Z`);
+                    start.setUTCHours(hours, mins, 0, 0);
+                    const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+                    await apiFetch("/bookings", {
+                      method: "POST",
+                      body: JSON.stringify({
+                        courtId: Number(courtIdStr),
+                        startTime: start.toISOString(),
+                        endTime: end.toISOString(),
+                      }),
+                    });
+                  }
+
+                  setSelected({});
+                  await loadAvailability();
+                  alert("Booking(s) created successfully");
+                } catch (err) {
+                  alert(err.message || "Failed to create booking");
+                } finally {
+                  setCreating(false);
+                }
+              }}
+              style={{ ...styles.btn, fontSize: 13 }}
+              disabled={creating}
+            >
+              {creating ? "Creating..." : `Confirm ${selectedCount} booking${selectedCount > 1 ? "s" : ""} →`}
+            </button>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+        {[{ label: "Available", color: G.greenLight }, { label: "Booked", color: "#f0f0ee" }, { label: "Selected", color: G.green }].map((legend) => (
+          <div key={legend.label} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <div style={{ width: 14, height: 14, borderRadius: 4, background: legend.color, border: `0.5px solid ${G.border}` }} />
+            <span style={{ fontSize: 12, color: G.muted }}>{legend.label}</span>
+          </div>
+        ))}
+      </div>
+      {loading ? (
+        <div style={{ color: G.muted, fontSize: 13 }}>Loading availability...</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {(remoteCourts ?? courts).map((court) => (
+            <div key={court.id} style={styles.card}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ fontWeight: 600, color: G.accent, fontSize: 15 }}>{court.name}</div>
+                <Badge color="green">{court.slots.length - court.busy.length} slots free</Badge>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {court.slots.map((slot) => {
+                  const isBusy = court.busy.includes(slot);
+                  const isSelected = selected[`${court.id}-${slot}`];
+                  return (
+                    <button
+                      key={slot}
+                      onClick={() => !isBusy && toggle(court.id, slot)}
+                      style={{ padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: isBusy ? "not-allowed" : "pointer", fontFamily: "inherit", border: `0.5px solid ${isSelected ? G.green : isBusy ? "transparent" : G.borderMed}`, background: isSelected ? G.green : isBusy ? "#f4f4f2" : G.greenLight, color: isSelected ? "white" : isBusy ? G.hint : G.greenDark, textDecoration: isBusy ? "line-through" : "none", transition: "all 0.15s" }}
+                    >
+                      {slot}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MatchmakingPage({ user }) {
   const [filter, setFilter] = useState("all");
   const [requested, setRequested] = useState({});
@@ -352,14 +935,41 @@ function MatchmakingPage({ user }) {
 }
 
 // ─── RANKINGS PAGE ────────────────────────────────────────────────────────────
-function RankingsPage({ user }) {
+function LegacyRankingsPage({ user }) {
   const [search, setSearch] = useState("");
+  const [players, setPlayers] = useState([]);
+  const [loading, setLoading] = useState(true);
   const userInitials = user?.fullName?.split(" ").map(n => n[0]).join("").slice(0,2).toUpperCase() || "ME";
-  const enriched = [
-    ...leaderboard,
-    { rank: 12, name: user?.fullName || "You", initials: userInitials, wins: 14, losses: 9, elo: 1400, trend: "+18", isYou: true },
-  ].sort((a, b) => b.elo - a.elo).map((p, i) => ({ ...p, rank: i + 1 }));
-  const filtered = enriched.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchPlayers = async () => {
+      try {
+        const data = await apiFetch("/players");
+        if (mounted) {
+          const enriched = (data || []).map((p, i) => ({
+            rank: i + 1,
+            name: p.fullName,
+            initials: p.fullName?.split(" ").map(n => n[0]).join("").slice(0,2).toUpperCase() || "?",
+            wins: p.wins || 0,
+            losses: p.losses || 0,
+            elo: p.eloRating,
+            trend: Math.random() > 0.5 ? "+" + Math.floor(Math.random() * 30) : "-" + Math.floor(Math.random() * 15),
+            isYou: p.userId === user?.userId
+          })).sort((a, b) => b.elo - a.elo);
+          setPlayers(enriched);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error("Failed to fetch players:", err);
+        if (mounted) setLoading(false);
+      }
+    };
+    fetchPlayers();
+    return () => { mounted = false; };
+  }, [user?.userId]);
+
+  const filtered = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
@@ -371,7 +981,10 @@ function RankingsPage({ user }) {
         <div style={{ display: "grid", gridTemplateColumns: "48px 1fr 80px 80px 70px 80px", padding: "12px 20px", background: G.surface, borderBottom: `0.5px solid ${G.border}`, fontSize: 11, fontWeight: 500, color: G.hint, textTransform: "uppercase", letterSpacing: 0.5 }}>
           <span>#</span><span>Player</span><span>W</span><span>L</span><span>Trend</span><span style={{ textAlign: "right" }}>ELO</span>
         </div>
-        {filtered.map((p, i) => (
+        {loading ? (
+          <div style={{ padding: "28px", textAlign: "center", color: G.muted }}>Loading leaderboard...</div>
+        ) : (
+        filtered.map((p, i) => (
           <div key={i} style={{ display: "grid", gridTemplateColumns: "48px 1fr 80px 80px 70px 80px", padding: "14px 20px", alignItems: "center", borderBottom: i < filtered.length - 1 ? `0.5px solid ${G.border}` : "none", background: p.isYou ? "rgba(29,158,117,0.06)" : "transparent", transition: "background 0.15s", cursor: "default" }}
             onMouseEnter={e => !p.isYou && (e.currentTarget.style.background = G.surface)}
             onMouseLeave={e => !p.isYou && (e.currentTarget.style.background = "transparent")}>
@@ -393,13 +1006,122 @@ function RankingsPage({ user }) {
               </div>
             </div>
           </div>
-        ))}
+        ))
+        )}
       </div>
     </div>
   );
 }
 
 // ─── ANALYTICS PAGE ───────────────────────────────────────────────────────────
+function RankingsPage({ user }) {
+  const [search, setSearch] = useState("");
+  const [players, setPlayers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const fetchRankings = async () => {
+      try {
+        const [playersResp, matchesResp] = await Promise.all([
+          apiFetch("/players"),
+          apiFetch("/matches"),
+        ]);
+
+        const latestTrendByPlayer = new Map();
+        (matchesResp || [])
+          .filter((match) => match.status === "Completed")
+          .sort((a, b) => new Date(b.startTime) - new Date(a.startTime))
+          .forEach((match) => {
+            (match.players || []).forEach((player) => {
+              if (!latestTrendByPlayer.has(player.playerId)) {
+                const change = (player.eloAfterMatch ?? player.eloRating) - (player.eloBeforeMatch ?? player.eloRating);
+                latestTrendByPlayer.set(player.playerId, change);
+              }
+            });
+          });
+
+        const enriched = (playersResp || [])
+          .slice()
+          .sort((a, b) => b.eloRating - a.eloRating)
+          .map((player, index) => {
+            const trendValue = latestTrendByPlayer.get(player.playerId) ?? 0;
+            return {
+              rank: index + 1,
+              name: player.fullName,
+              initials: player.fullName?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?",
+              wins: player.wins || 0,
+              losses: player.losses || 0,
+              elo: player.eloRating,
+              trend: `${trendValue >= 0 ? "+" : ""}${trendValue}`,
+              isYou: player.userId === user?.userId,
+            };
+          });
+
+        if (mounted) {
+          setPlayers(enriched);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error("Failed to fetch players:", err);
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchRankings();
+    return () => { mounted = false; };
+  }, [user?.userId]);
+
+  const filtered = players.filter((player) => player.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
+        <SectionTitle title="Rankings" sub="ELO-based live leaderboard · updated after every completed match" />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search player..." style={{ padding: "9px 16px", borderRadius: 9, fontSize: 13, fontFamily: "inherit", border: `0.5px solid ${G.borderMed}`, background: G.card, color: G.text, outline: "none", width: 200 }} />
+      </div>
+      <div style={{ ...styles.card, padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "48px 1fr 80px 80px 70px 80px", padding: "12px 20px", background: G.surface, borderBottom: `0.5px solid ${G.border}`, fontSize: 11, fontWeight: 500, color: G.hint, textTransform: "uppercase", letterSpacing: 0.5 }}>
+          <span>#</span><span>Player</span><span>W</span><span>L</span><span>Trend</span><span style={{ textAlign: "right" }}>ELO</span>
+        </div>
+        {loading ? (
+          <div style={{ padding: "28px", textAlign: "center", color: G.muted }}>Loading leaderboard...</div>
+        ) : (
+          filtered.map((player, index) => (
+            <div
+              key={`${player.name}-${player.rank}`}
+              style={{ display: "grid", gridTemplateColumns: "48px 1fr 80px 80px 70px 80px", padding: "14px 20px", alignItems: "center", borderBottom: index < filtered.length - 1 ? `0.5px solid ${G.border}` : "none", background: player.isYou ? "rgba(29,158,117,0.06)" : "transparent", transition: "background 0.15s", cursor: "default" }}
+              onMouseEnter={(event) => !player.isYou && (event.currentTarget.style.background = G.surface)}
+              onMouseLeave={(event) => !player.isYou && (event.currentTarget.style.background = "transparent")}
+            >
+              <span style={{ fontFamily: "Georgia, serif", fontSize: 16, fontWeight: 700, color: player.rank <= 3 ? ["#EF9F27", "#888", "#b07020"][player.rank - 1] : G.hint }}>{player.rank <= 3 ? ["🥇", "🥈", "🥉"][player.rank - 1] : player.rank}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Avatar initials={player.initials} size={34} isYou={player.isYou} />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: player.isYou ? 600 : 500, color: G.accent }}>{player.name} {player.isYou && <span style={{ fontSize: 11, color: G.green, marginLeft: 4 }}>· You</span>}</div>
+                  <div style={{ fontSize: 11, color: G.hint }}>{player.wins + player.losses} matches played</div>
+                </div>
+              </div>
+              <span style={{ fontSize: 13, color: G.accent, fontWeight: 500 }}>{player.wins}</span>
+              <span style={{ fontSize: 13, color: G.muted }}>{player.losses}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: player.trend.startsWith("+") ? G.green : player.trend.startsWith("-") ? G.coral : G.hint }}>{player.trend}</span>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontFamily: "Georgia, serif", fontSize: 16, fontWeight: 700, color: G.green }}>{player.elo.toLocaleString()}</div>
+                <div style={{ width: 60, height: 3, background: G.greenLight, borderRadius: 4, marginLeft: "auto", marginTop: 3, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.min((player.elo / 1900) * 100, 100)}%`, height: "100%", background: G.green, borderRadius: 4 }} />
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsPage() {
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
@@ -457,9 +1179,43 @@ const NAV_ITEMS = [
 function PlayerLayout() {
   const { user, logout } = useAuth();
   const [page, setPage] = useState("dashboard");
+  const [playerData, setPlayerData] = useState(null);
+  const [sidebarBooking, setSidebarBooking] = useState(null);
   const nav = useNav();
 
   const initials = user?.fullName?.split(" ").map(n => n[0]).join("").slice(0,2).toUpperCase() || "ME";
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchSidebarData = async () => {
+      try {
+        const [playerResp, bookingsResp] = await Promise.all([
+          apiFetch("/players/me"),
+          apiFetch("/bookings/my"),
+        ]);
+
+        if (!mounted) {
+          return;
+        }
+
+        setPlayerData(playerResp);
+        const upcoming = (bookingsResp || [])
+          .filter((booking) => booking.status === "Confirmed" && new Date(booking.startTime) > new Date())
+          .sort((a, b) => new Date(a.startTime) - new Date(b.startTime))[0];
+        setSidebarBooking(upcoming ?? null);
+      } catch (err) {
+        console.error("Failed to fetch sidebar data:", err);
+      }
+    };
+    fetchSidebarData();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    const handleNavigateBooking = () => setPage("booking");
+    window.addEventListener("padel:navigate-booking", handleNavigateBooking);
+    return () => window.removeEventListener("padel:navigate-booking", handleNavigateBooking);
+  }, []);
 
   const renderPage = () => {
     switch (page) {
@@ -494,8 +1250,16 @@ function PlayerLayout() {
             <Avatar initials={initials} size={34} isYou />
             <div>
               <div style={{ fontSize: 12, fontWeight: 500, color: "white" }}>{user?.fullName}</div>
-              <div style={{ fontSize: 11, color: G.greenMid }}>ELO 1,400</div>
+              <div style={{ fontSize: 11, color: G.greenMid }}>ELO {playerData?.eloRating?.toLocaleString() || "—"}</div>
             </div>
+          </div>
+          <div style={{ border: "0.5px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Live Summary</div>
+            <div style={{ fontSize: 11, color: "white", marginBottom: 3 }}>{playerData?.skillLevel || "Beginner"} · {playerData ? `${playerData.wins}W ${playerData.losses}L` : "0W 0L"}</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", marginBottom: 8 }}>
+              {sidebarBooking ? `Next booking ${formatShortDateTime(sidebarBooking.startTime)}` : "No upcoming booking"}
+            </div>
+            <button onClick={() => setPage("booking")} style={{ width: "100%", padding: "7px", borderRadius: 7, background: "rgba(29,158,117,0.18)", border: "0.5px solid rgba(29,158,117,0.35)", color: G.greenMid, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Open Booking</button>
           </div>
           <button onClick={() => { logout(); nav("/"); }} style={{ width: "100%", padding: "7px", borderRadius: 7, background: "transparent", border: "0.5px solid rgba(255,255,255,0.12)", color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Sign out</button>
         </div>
@@ -533,6 +1297,14 @@ export default function App() {
       <Route path="/" element={<LandingPage />} />
       <Route path="/signin" element={<SignIn />} />
       <Route path="/signup" element={<SignUp />} />
+      <Route
+        path="/profile"
+        element={
+          <ProtectedRoute>
+            <PlayerProfile />
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/player"
         element={

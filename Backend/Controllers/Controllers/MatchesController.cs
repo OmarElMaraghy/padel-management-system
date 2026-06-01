@@ -301,7 +301,9 @@ public class MatchesController : ControllerBase
                     PlayerId = mp.PlayerId,
                     FullName = mp.Player.User.FullName,
                     Team = mp.Team,
-                    EloRating = mp.Player.EloRating
+                    EloRating = mp.Player.EloRating,
+                    EloBeforeMatch = mp.EloBeforeMatch,
+                    EloAfterMatch = mp.EloAfterMatch
                 })
                 .ToList()
         };

@@ -13,4 +13,8 @@ public class MatchPlayer
     public Player Player { get; set; } = null!;
 
     public string Team { get; set; } = string.Empty;
+
+    public int? EloBeforeMatch { get; set; }
+
+    public int? EloAfterMatch { get; set; }
 }

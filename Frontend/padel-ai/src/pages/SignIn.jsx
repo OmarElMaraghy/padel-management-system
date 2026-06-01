@@ -242,10 +242,15 @@ export default function SignIn() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    login({ fullName: "Abdelrhaman Yasser", email });
-    navigate("/player");
+    try {
+      await login({ email, password });
+      navigate("/player");
+    } catch (err) {
+      // TODO: replace with inline error UI later
+      alert(err.message || "Login failed");
+    }
   };
 
   return (
