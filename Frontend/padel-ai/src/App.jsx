@@ -574,7 +574,7 @@ function LandingPage() {
         <div style={{ background: G.accent, borderRadius: 18, padding: "40px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 20 }}>
           <div>
             <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 700, color: "white", marginBottom: 6 }}>Ready to dominate the court?</div>
-            <div style={{ fontSize: 13, color: G.greenMid, fontWeight: 300 }}>Join 1,240+ players already on Padel Mates</div>
+            <div style={{ fontSize: 13, color: G.greenMid, fontWeight: 300 }}>Join real players already on Padel Mates</div>
           </div>
           <button onClick={() => nav("/signup")} style={{ background: G.green, color: "white", border: "none", padding: "13px 28px", borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }}>
             Create account →
