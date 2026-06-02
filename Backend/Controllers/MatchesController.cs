@@ -139,6 +139,15 @@ public class MatchesController : ControllerBase
             {
                 return BadRequest("Match time must be within the booking time.");
             }
+
+            // Prevent using same booking for multiple matches (Scheduled or Completed)
+            var existingMatch = await _context.Matches
+                .AnyAsync(m => m.BookingId == booking.Id && m.Status != "Cancelled");
+
+            if (existingMatch)
+            {
+                return BadRequest("This booking is already associated with a match.");
+            }
         }
         else
         {

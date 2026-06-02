@@ -197,68 +197,67 @@ function PostGameModal({ matchId, playerId, onClose, onSave }) {
   const current = RADAR_SKILLS[step];
   const isLast  = step === RADAR_SKILLS.length - 1;
 
+  const handleSave = (finalAnswers) => {
+    setSaving(true);
+    try {
+      const radar = RADAR_SKILLS.map((s) => {
+        const idx = s.options.indexOf(finalAnswers[s.key]);
+        const score = idx >= 0 ? Math.round(((idx + 1) / 4) * 100) : 50;
+        return { skill: s.label, you: score, avg: 55 };
+      });
+
+      const existing = loadRadarData(playerId);
+      let merged = radar;
+      if (existing && existing.length === radar.length) {
+        merged = radar.map((r, i) => ({ ...r, you: Math.round(r.you * 0.4 + existing[i].you * 0.6) }));
+      }
+
+      saveRadarData(merged, playerId);
+
+      const responses = loadPostgameResponses(playerId);
+      responses.push({ matchId, date: new Date().toISOString(), answers: finalAnswers });
+      savePostgameResponses(responses, playerId);
+
+      onSave?.(merged);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const pick = (value) => {
     const next = { ...answers, [current.key]: value };
     setAnswers(next);
-    if (!isLast) {
-      setStep(step + 1);
-    } else {
-      handleSave(next);
-    }
-  };
-
-  const handleSave = async (finalAnswers) => {
-    setSaving(true);
-    // Convert option indices (0-3) to 0-100 scale
-    const radar = RADAR_SKILLS.map((s) => {
-      const idx   = s.options.indexOf(finalAnswers[s.key]);
-      const score = idx >= 0 ? Math.round(((idx + 1) / 4) * 100) : 50;
-      return { skill: s.label, you: score, avg: 55 };
-    });
-    // Merge with existing — weighted average with past entries
-    const existing = loadRadarData(playerId);
-    let merged = radar;
-    if (existing && existing.length === radar.length) {
-      merged = radar.map((r, i) => ({ ...r, you: Math.round(r.you * 0.4 + existing[i].you * 0.6) }));
-    }
-    saveRadarData(merged, playerId);
-    // Save raw response for history
-    const responses = loadPostgameResponses(playerId);
-    responses.push({ matchId, date: new Date().toISOString(), answers: finalAnswers });
-    savePostgameResponses(responses, playerId);
-    setSaving(false);
-    onSave(merged);
+    if (!isLast) setStep(step + 1);
+    else handleSave(next);
   };
 
   const optionColors = ["#f0f0ee", G.amberLight, G.greenLight, G.greenLight];
-  const optionText   = [G.muted,   "#633806",    G.greenDark,  G.greenDark];
-  const selectedColor = G.green;
+  const optionText   = [G.muted, "#633806", G.greenDark, G.greenDark];
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(4,52,44,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ background: G.card, borderRadius: 18, padding: "32px 28px", width: 420, maxWidth: "90vw", boxShadow: "0 24px 60px rgba(4,52,44,0.25)" }}>
-        {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: G.green, textTransform: "uppercase", letterSpacing: 0.8 }}>Post-Game Review</div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: G.hint, fontSize: 18, fontFamily: "inherit", padding: 0 }}>✕</button>
         </div>
+
         <div style={{ fontFamily: "Georgia, serif", fontSize: 19, fontWeight: 700, color: G.accent, marginBottom: 6 }}>How did you play?</div>
         <div style={{ fontSize: 12, color: G.muted, marginBottom: 20 }}>This builds your Skills Radar in Analytics</div>
 
-        {/* Progress dots */}
         <div style={{ display: "flex", gap: 6, marginBottom: 24 }}>
           {RADAR_SKILLS.map((_, i) => (
             <div key={i} style={{ height: 4, flex: 1, borderRadius: 4, background: i < step ? G.green : i === step ? G.greenMid : G.border }} />
           ))}
         </div>
 
-        {/* Skill label */}
         <div style={{ background: G.greenLight, borderRadius: 8, padding: "6px 12px", display: "inline-block", marginBottom: 12 }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: G.greenDark }}>{current.label}</span>
         </div>
         <div style={{ fontSize: 15, fontWeight: 500, color: G.accent, marginBottom: 18 }}>{current.question}</div>
 
-        {/* Options */}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {current.options.map((opt, i) => (
             <button
@@ -310,17 +309,23 @@ function RecordMatchModal({ onClose, onRecorded }) {
     let mounted = true;
     (async () => {
       try {
-        const [courtsResp, playersResp, meResp, bookingsResp] = await Promise.all([
+        const [courtsResp, playersResp, meResp, bookingsResp, matchesResp] = await Promise.all([
           apiFetch("/courts"),
           apiFetch("/players"),
           apiFetch("/players/me"),
           apiFetch("/bookings/my"),
+          apiFetch("/matches"),
         ]);
         if (!mounted) return;
         const activeCourts = (courtsResp || []).filter((c) => c.isActive !== false);
         const now = new Date();
-        const confirmedBookings = (bookingsResp || [])
-          .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > now && new Date(b.endTime) > now)
+        const bookingsList = (bookingsResp || []).slice();
+        const bookingsWithMatch = new Set((matchesResp || [])
+          .filter((m) => m.bookingId && m.status !== "Cancelled")
+          .map((m) => String(m.bookingId)));
+
+        const confirmedBookings = bookingsList
+          .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > now && new Date(b.endTime) > now && !bookingsWithMatch.has(String(b.id)))
           .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
         const meId = meResp?.playerId ?? null;
         setCourts(activeCourts);
@@ -618,12 +623,18 @@ function DashboardPage({ user }) {
       const sortedPlayers = (playersResp || []).slice().sort((a, b) => b.eloRating - a.eloRating);
       const rank = sortedPlayers.findIndex((p) => p.playerId === playerResp.playerId) + 1;
 
-      const upcoming = (bookingsResp || [])
-        .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > new Date())
+      // Exclude bookings that already have an associated non-cancelled match
+      const bookingsList = bookingsResp || [];
+      const bookingsWithMatch = new Set((matches || [])
+        .filter((m) => m.bookingId && m.status !== "Cancelled")
+        .map((m) => String(m.bookingId)));
+
+      const upcoming = bookingsList
+        .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > new Date() && !bookingsWithMatch.has(String(b.id)))
         .sort((a, b) => new Date(a.startTime) - new Date(b.startTime))[0];
 
       const relatedMatch = upcoming
-        ? matches.find((m) => m.bookingId === upcoming.id && new Date(m.startTime) > new Date())
+        ? matches.find((m) => m.bookingId === upcoming.id && m.status !== "Cancelled")
         : null;
 
       setPlayerData(playerResp);
@@ -1724,6 +1735,8 @@ function BookingDetailsPage({ onBack }) {
   const [loading, setLoading] = useState(true);
   const [cancelLoadingId, setCancelLoadingId] = useState(null);
   const [bookings, setBookings] = useState([]);
+  const [usedBookings, setUsedBookings] = useState([]);
+  const [cancelledBookings, setCancelledBookings] = useState([]);
   const [courtMap, setCourtMap] = useState({});
   const [matchMap, setMatchMap] = useState({});
   const detailsMountedRef = useRef(false);
@@ -1736,20 +1749,24 @@ function BookingDetailsPage({ onBack }) {
         apiFetch("/matches"),
       ]);
       const now = new Date();
-      const upcoming = (bookingsResp || [])
-        .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > now)
+      const bookingsList = bookingsResp || [];
+      const courtsById = (courtsResp || []).reduce((acc, court) => { acc[court.id] = court; return acc; }, {});
+      const matchesByBookingId = (matchesResp || []).reduce((acc, match) => { if (match.bookingId) acc[match.bookingId] = match; return acc; }, {});
+
+      const upcoming = bookingsList
+        .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > now && !(matchesByBookingId[b.id] && matchesByBookingId[b.id].status !== "Cancelled"))
         .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
-      const courtsById = (courtsResp || []).reduce((acc, court) => {
-        acc[court.id] = court;
-        return acc;
-      }, {});
-      const matchesByBookingId = (matchesResp || []).reduce((acc, match) => {
-        if (match.bookingId) acc[match.bookingId] = match;
-        return acc;
-      }, {});
+
+      const used = bookingsList
+        .filter((b) => b.status === "Confirmed" && matchesByBookingId[b.id] && matchesByBookingId[b.id].status !== "Cancelled")
+        .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+      const cancelled = bookingsList.filter((b) => b.status === "Cancelled");
 
       if (detailsMountedRef.current) {
         setBookings(upcoming);
+        setUsedBookings(used);
+        setCancelledBookings(cancelled);
         setCourtMap(courtsById);
         setMatchMap(matchesByBookingId);
       }
@@ -1798,12 +1815,14 @@ function BookingDetailsPage({ onBack }) {
       <button onClick={onBack} style={{ background: "none", border: "none", color: G.green, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 12, display: "flex", alignItems: "center", gap: 4 }}>
         ← Back to Booking
       </button>
-      <SectionTitle title="Booking Details" sub="Your upcoming confirmed bookings" />
+      <SectionTitle title="Booking Details" sub="Your bookings" />
 
+      {/* Upcoming Bookings (Confirmed, future, and no associated non-cancelled match) */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: G.accent, marginBottom: 8 }}>Upcoming Bookings</div>
       {bookings.length === 0 ? (
-        <div style={{ ...styles.card, color: G.muted, fontSize: 13 }}>No upcoming bookings.</div>
+        <div style={{ ...styles.card, color: G.muted, fontSize: 13, marginBottom: 12 }}>No upcoming bookings.</div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 12 }}>
           {bookings.map((booking) => {
             const court = courtMap[booking.courtId];
             const courtName = court?.name || booking.courtName || `Court ${booking.courtId}`;
@@ -1815,9 +1834,7 @@ function BookingDetailsPage({ onBack }) {
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
                   <div>
                     <div style={{ fontSize: 11, color: G.hint, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Court</div>
-                    <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 800, color: G.accent, marginBottom: 6 }}>
-                      {courtName}
-                    </div>
+                    <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 800, color: G.accent, marginBottom: 6 }}>{courtName}</div>
                     <div style={{ display: "grid", gridTemplateColumns: "90px 1fr", rowGap: 8, columnGap: 10 }}>
                       <div style={{ fontSize: 12, color: G.hint }}>Date</div>
                       <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatShortDate(booking.startTime)}</div>
@@ -1828,29 +1845,88 @@ function BookingDetailsPage({ onBack }) {
                       <div style={{ fontSize: 12, color: G.hint }}>Status</div>
                       <div><Badge color="green">{booking.status}</Badge></div>
                       <div style={{ fontSize: 12, color: G.hint }}>Match</div>
-                      <div>
-                        {bookingMatch ? (
-                          <Badge color={bookingMatch.status === "Completed" ? "green" : "amber"}>
-                            {bookingMatch.status === "Completed" ? "Match recorded" : "Match scheduled"}
-                          </Badge>
-                        ) : (
-                          <Badge color="gray">No match yet</Badge>
-                        )}
-                      </div>
+                      <div>{bookingMatch ? (<Badge color={bookingMatch.status === "Completed" ? "green" : "amber"}>{bookingMatch.status === "Completed" ? "Match recorded" : "Match scheduled"}</Badge>) : (<Badge color="gray">No match yet</Badge>)}</div>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleCancelBooking(booking.id)}
-                    disabled={isCancelling}
-                    style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: isCancelling ? "wait" : "pointer", fontFamily: "inherit", opacity: isCancelling ? 0.7 : 1 }}
-                  >
-                    {isCancelling ? "Cancelling..." : "Cancel Booking"}
-                  </button>
+                  <button onClick={() => handleCancelBooking(booking.id)} disabled={isCancelling || (bookingMatch && bookingMatch.status !== "Cancelled")} style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: isCancelling ? "wait" : "pointer", fontFamily: "inherit", opacity: isCancelling ? 0.7 : 1 }}>{isCancelling ? "Cancelling..." : "Cancel Booking"}</button>
                 </div>
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Used / Completed Bookings (have an associated scheduled or completed match) */}
+      {usedBookings.length > 0 && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 600, color: G.accent, marginBottom: 8 }}>Completed / Used Bookings</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 12 }}>
+            {usedBookings.map((booking) => {
+              const court = courtMap[booking.courtId];
+              const courtName = court?.name || booking.courtName || `Court ${booking.courtId}`;
+              const bookingMatch = matchMap[booking.id];
+
+              return (
+                <div key={`used-${booking.id}`} style={{ ...styles.card }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: G.hint, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Court</div>
+                      <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 800, color: G.accent, marginBottom: 6 }}>{courtName}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "90px 1fr", rowGap: 8, columnGap: 10 }}>
+                        <div style={{ fontSize: 12, color: G.hint }}>Date</div>
+                        <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatShortDate(booking.startTime)}</div>
+                        <div style={{ fontSize: 12, color: G.hint }}>Start</div>
+                        <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatTimeLabel(booking.startTime)}</div>
+                        <div style={{ fontSize: 12, color: G.hint }}>End</div>
+                        <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatTimeLabel(booking.endTime)}</div>
+                        <div style={{ fontSize: 12, color: G.hint }}>Status</div>
+                        <div><Badge color="green">{booking.status}</Badge></div>
+                        <div style={{ fontSize: 12, color: G.hint }}>Match</div>
+                        <div>{bookingMatch ? (<Badge color={bookingMatch.status === "Completed" ? "green" : "amber"}>{bookingMatch.status === "Completed" ? "Match recorded" : "Match scheduled"}</Badge>) : (<Badge color="gray">No match yet</Badge>)}</div>
+                      </div>
+                    </div>
+                    <div style={{ minWidth: 140 }}>
+                      <button disabled style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: "not-allowed", fontFamily: "inherit", opacity: 0.7 }}>Cannot cancel</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Cancelled Bookings */}
+      {cancelledBookings.length > 0 && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 600, color: G.accent, marginBottom: 8 }}>Cancelled Bookings</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {cancelledBookings.map((booking) => {
+              const court = courtMap[booking.courtId];
+              const courtName = court?.name || booking.courtName || `Court ${booking.courtId}`;
+              return (
+                <div key={`cancelled-${booking.id}`} style={{ ...styles.card }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: G.hint, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Court</div>
+                      <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 800, color: G.accent, marginBottom: 6 }}>{courtName}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "90px 1fr", rowGap: 8, columnGap: 10 }}>
+                        <div style={{ fontSize: 12, color: G.hint }}>Date</div>
+                        <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatShortDate(booking.startTime)}</div>
+                        <div style={{ fontSize: 12, color: G.hint }}>Start</div>
+                        <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatTimeLabel(booking.startTime)}</div>
+                        <div style={{ fontSize: 12, color: G.hint }}>End</div>
+                        <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatTimeLabel(booking.endTime)}</div>
+                        <div style={{ fontSize: 12, color: G.hint }}>Status</div>
+                        <div><Badge color="gray">Cancelled</Badge></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
@@ -1875,10 +1951,12 @@ function PlayerLayout() {
 
   const refreshSidebar = useCallback(async () => {
     try {
-      const [playerResp, bookingsResp] = await Promise.all([apiFetch("/players/me"), apiFetch("/bookings/my")]);
+      const [playerResp, bookingsResp, matchesResp] = await Promise.all([apiFetch("/players/me"), apiFetch("/bookings/my"), apiFetch("/matches")]);
       setPlayerData(playerResp);
-      const upcoming = (bookingsResp || [])
-        .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > new Date())
+      const bookingsList = bookingsResp || [];
+      const bookingsWithMatch = new Set((matchesResp || []).filter((m) => m.bookingId && m.status !== "Cancelled").map((m) => String(m.bookingId)));
+      const upcoming = bookingsList
+        .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > new Date() && !bookingsWithMatch.has(String(b.id)))
         .sort((a, b) => new Date(a.startTime) - new Date(b.startTime))[0];
       setSidebarBooking(upcoming ?? null);
     } catch (_) {}

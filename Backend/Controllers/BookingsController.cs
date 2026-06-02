@@ -208,6 +208,13 @@ public class BookingsController : ControllerBase
             return BadRequest("Booking is already cancelled.");
         }
 
+        // Prevent cancelling if there's an associated non-cancelled match
+        var hasMatch = await _context.Matches.AnyAsync(m => m.BookingId == id && m.Status != "Cancelled");
+        if (hasMatch)
+        {
+            return BadRequest("Cannot cancel booking because a match is associated with it.");
+        }
+
         booking.Status = "Cancelled";
         await _context.SaveChangesAsync();
 
