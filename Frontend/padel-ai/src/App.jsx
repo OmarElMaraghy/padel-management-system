@@ -503,10 +503,10 @@ function LandingPage() {
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "80px 32px 60px", opacity: mounted ? 1 : 0, transform: mounted ? "none" : "translateY(20px)", transition: "opacity 0.6s ease, transform 0.6s ease", textAlign: "center" }}>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: G.greenLight, color: G.greenDark, fontSize: 11, fontWeight: 500, padding: "5px 14px", borderRadius: 100, marginBottom: 28, border: `0.5px solid ${G.borderMed}`, letterSpacing: 0.5, textTransform: "uppercase" }}>
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: G.green, display: "inline-block" }} />
-          AI-Powered Sports SaaS
+          Padel Mates Sports Platform
         </div>
         <h1 style={{ fontFamily: "Georgia, serif", fontSize: 56, fontWeight: 700, color: G.accent, letterSpacing: -2, lineHeight: 1.05, margin: "0 0 20px" }}>
-          Padel, Ranked.<br />Matched. <span style={{ color: G.green }}>Mastered.</span>
+          Padel Mates
         </h1>
         <p style={{ fontSize: 17, color: G.muted, lineHeight: 1.7, maxWidth: 540, margin: "0 auto 36px", fontWeight: 300 }}>
           The all-in-one platform for serious padel players — smart court booking, AI matchmaking, and real-time performance analytics.
@@ -521,7 +521,7 @@ function LandingPage() {
         {[
           { icon: "🎯", label: "Matchmaking found", value: "3 balanced opponents near you", stat: "ELO ±12", statColor: "green" },
           { icon: "📈", label: "Platform win rate",  value: "71% — up 13% this month",      stat: "+13%",   statColor: "green" },
-          { icon: "👥", label: "Active players",     value: "1,240+ on PadelAI",            stat: "Growing", statColor: "amber" },
+          { icon: "👥", label: "Active players",     value: "1,240+ on Padel Mates",        stat: "Growing", statColor: "amber" },
         ].map((c, i) => (
           <div key={i} style={{ ...styles.card, display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ fontSize: 20 }}>{c.icon}</div>
@@ -550,7 +550,7 @@ function LandingPage() {
         <div style={{ background: G.accent, borderRadius: 18, padding: "40px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 20 }}>
           <div>
             <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 700, color: "white", marginBottom: 6 }}>Ready to dominate the court?</div>
-            <div style={{ fontSize: 13, color: G.greenMid, fontWeight: 300 }}>Join 1,240+ players already on PadelAI</div>
+            <div style={{ fontSize: 13, color: G.greenMid, fontWeight: 300 }}>Join 1,240+ players already on Padel Mates</div>
           </div>
           <button onClick={() => nav("/signup")} style={{ background: G.green, color: "white", border: "none", padding: "13px 28px", borderRadius: 10, fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }}>
             Create account →
@@ -570,7 +570,6 @@ function DashboardPage({ user }) {
   const [userRanking,   setUserRanking]   = useState("—");
   const [totalPlayers,  setTotalPlayers]  = useState(0);
   const [loading,       setLoading]       = useState(true);
-  const [cancelLoading, setCancelLoading] = useState(false);
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   const [pendingMatchId,    setPendingMatchId]    = useState(null);
 
@@ -756,29 +755,6 @@ function DashboardPage({ user }) {
                   <div style={{ fontSize: 11, color: G.greenMid, marginBottom: 2 }}>📍 {nextBooking.location}</div>
                 )}
                 <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>{nextBooking.vs}</div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button style={{ ...styles.btnGhost, flex: 1, fontSize: 12 }} onClick={() => window.dispatchEvent(new CustomEvent("padel:navigate-booking"))}>
-                  Manage Booking
-                </button>
-                <button
-                  onClick={async () => {
-                    setCancelLoading(true);
-                    try {
-                      await apiFetch(`/bookings/${nextBooking.id}`, { method: "DELETE" });
-                      setNextBooking(null);
-                      window.dispatchEvent(new CustomEvent("booking-cancelled"));
-                    } catch (err) {
-                      alert(err.message || "Failed to cancel booking");
-                    } finally {
-                      setCancelLoading(false);
-                    }
-                  }}
-                  disabled={cancelLoading}
-                  style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: cancelLoading ? "wait" : "pointer", fontFamily: "inherit", opacity: cancelLoading ? 0.7 : 1 }}
-                >
-                  {cancelLoading ? "Cancelling..." : "Cancel"}
-                </button>
               </div>
             </>
           ) : (
@@ -1614,37 +1590,38 @@ function AnalyticsPage({ user }) {
   );
 }
 
-function BookingDetailsPage({ bookingId, onBack }) {
+function BookingDetailsPage({ onBack }) {
   const [loading, setLoading] = useState(true);
-  const [booking, setBooking] = useState(null);
-  const [court, setCourt] = useState(null);
+  const [cancelLoadingId, setCancelLoadingId] = useState(null);
+  const [bookings, setBookings] = useState([]);
+  const [courtMap, setCourtMap] = useState({});
   const detailsMountedRef = useRef(false);
 
   const fetchBookingDetails = useCallback(async () => {
     try {
-      const bookings = await apiFetch("/bookings/my");
-      const found = (bookings || []).find((b) => b.id === bookingId) ?? null;
-      if (!found) {
-        if (detailsMountedRef.current) {
-          setBooking(null);
-          setCourt(null);
-        }
-        return;
-      }
-
-      const courts = await apiFetch("/courts");
-      const foundCourt = (courts || []).find((c) => c.id === found.courtId) ?? null;
+      const [bookingsResp, courtsResp] = await Promise.all([
+        apiFetch("/bookings/my"),
+        apiFetch("/courts"),
+      ]);
+      const now = new Date();
+      const upcoming = (bookingsResp || [])
+        .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > now)
+        .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+      const courtsById = (courtsResp || []).reduce((acc, court) => {
+        acc[court.id] = court;
+        return acc;
+      }, {});
 
       if (detailsMountedRef.current) {
-        setBooking(found);
-        setCourt(foundCourt);
+        setBookings(upcoming);
+        setCourtMap(courtsById);
       }
     } catch (err) {
       console.error("Booking details error:", err);
     } finally {
       if (detailsMountedRef.current) setLoading(false);
     }
-  }, [bookingId]);
+  }, []);
 
   useEffect(() => {
     detailsMountedRef.current = true;
@@ -1664,60 +1641,67 @@ function BookingDetailsPage({ bookingId, onBack }) {
     return <div style={{ padding: "28px 32px", color: G.muted }}>Loading booking...</div>;
   }
 
-  if (!booking) {
-    return (
-      <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
-        <SectionTitle title="Booking Details" sub="This booking was not found." />
-        <button onClick={onBack} style={{ ...styles.btnGhost }}>← Back</button>
-      </div>
-    );
-  }
-
-  const venueName = court?.name || booking.courtName || `Court ${booking.courtId}`;
-  const venueLocation = court?.location || "";
+  const handleCancelBooking = async (bookingId) => {
+    setCancelLoadingId(bookingId);
+    try {
+      await apiFetch(`/bookings/${bookingId}`, { method: "DELETE" });
+      await fetchBookingDetails();
+      window.dispatchEvent(new CustomEvent("booking-cancelled"));
+    } catch (err) {
+      alert(err.message || "Failed to cancel booking");
+    } finally {
+      setCancelLoadingId(null);
+    }
+  };
 
   return (
     <div style={{ padding: "28px 32px", maxWidth: 900, margin: "0 auto" }}>
       <button onClick={onBack} style={{ background: "none", border: "none", color: G.green, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 12, display: "flex", alignItems: "center", gap: 4 }}>
         ← Back to Booking
       </button>
-      <SectionTitle title="Booking Details" sub="Time, location, and venue info" />
+      <SectionTitle title="Booking Details" sub="Your upcoming confirmed bookings" />
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
-        <div style={{ ...styles.card }}>
-          <div style={{ fontSize: 11, color: G.hint, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Event</div>
-          <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 800, color: G.accent, marginBottom: 6 }}>
-            Court Booking
-          </div>
-          <div style={{ fontSize: 13, color: G.muted, marginBottom: 14 }}>
-            Confirmed reservation for your next session.
-          </div>
+      {bookings.length === 0 ? (
+        <div style={{ ...styles.card, color: G.muted, fontSize: 13 }}>No upcoming bookings.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {bookings.map((booking) => {
+            const court = courtMap[booking.courtId];
+            const courtName = court?.name || booking.courtName || `Court ${booking.courtId}`;
+            const isCancelling = cancelLoadingId === booking.id;
 
-          <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 10, columnGap: 10 }}>
-            <div style={{ fontSize: 12, color: G.hint }}>When</div>
-            <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatShortDateTime(booking.startTime)} – {formatTimeLabel(booking.endTime)}</div>
-            <div style={{ fontSize: 12, color: G.hint }}>Where</div>
-            <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{venueLocation || "Cairo"}</div>
-            <div style={{ fontSize: 12, color: G.hint }}>Venue</div>
-            <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{venueName}</div>
-            <div style={{ fontSize: 12, color: G.hint }}>Status</div>
-            <div><Badge color={booking.status === "Confirmed" ? "green" : "gray"}>{booking.status}</Badge></div>
-          </div>
+            return (
+              <div key={booking.id} style={{ ...styles.card }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: G.hint, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Court</div>
+                    <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 800, color: G.accent, marginBottom: 6 }}>
+                      {courtName}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "90px 1fr", rowGap: 8, columnGap: 10 }}>
+                      <div style={{ fontSize: 12, color: G.hint }}>Date</div>
+                      <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatShortDate(booking.startTime)}</div>
+                      <div style={{ fontSize: 12, color: G.hint }}>Start</div>
+                      <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatTimeLabel(booking.startTime)}</div>
+                      <div style={{ fontSize: 12, color: G.hint }}>End</div>
+                      <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatTimeLabel(booking.endTime)}</div>
+                      <div style={{ fontSize: 12, color: G.hint }}>Status</div>
+                      <div><Badge color="green">{booking.status}</Badge></div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleCancelBooking(booking.id)}
+                    disabled={isCancelling}
+                    style={{ background: G.coralLight, color: G.coral, border: "none", padding: "9px 14px", borderRadius: 9, fontSize: 12, cursor: isCancelling ? "wait" : "pointer", fontFamily: "inherit", opacity: isCancelling ? 0.7 : 1 }}
+                  >
+                    {isCancelling ? "Cancelling..." : "Cancel Booking"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
-
-        <div style={{ ...styles.card }}>
-          <div style={{ fontSize: 11, color: G.hint, marginBottom: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>Venue Details</div>
-          <div style={{ fontSize: 13, color: G.accent, fontWeight: 700, marginBottom: 8 }}>{venueName}</div>
-          <div style={{ fontSize: 12, color: G.muted, lineHeight: 1.7 }}>
-            {venueLocation ? `Located in ${venueLocation}, Cairo.` : "Cairo venue."} This is a seeded demo venue in the system. You can use it to book, record matches, and track your ranking.
-          </div>
-          <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Badge color="green">Hourly slots</Badge>
-            <Badge color="gray">Indoor/Outdoor: TBD</Badge>
-            <Badge color="gray">Parking: TBD</Badge>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1737,7 +1721,6 @@ function PlayerLayout() {
   const [page,           setPage]           = useState("dashboard");
   const [playerData,     setPlayerData]     = useState(null);
   const [sidebarBooking, setSidebarBooking] = useState(null);
-  const [activeBookingId, setActiveBookingId] = useState(null);
   const initials = user?.fullName?.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase() || "ME";
 
   const refreshSidebar = useCallback(async () => {
@@ -1769,12 +1752,7 @@ function PlayerLayout() {
   }, []);
 
   useEffect(() => {
-    const openDetails = (event) => {
-      const bookingId = event?.detail?.bookingId;
-      if (!bookingId) return;
-      setActiveBookingId(bookingId);
-      setPage("booking-details");
-    };
+    const openDetails = () => setPage("booking-details");
     window.addEventListener("padel:open-booking-details", openDetails);
     return () => window.removeEventListener("padel:open-booking-details", openDetails);
   }, []);
@@ -1786,7 +1764,6 @@ function PlayerLayout() {
       case "booking-details":
         return (
           <BookingDetailsPage
-            bookingId={activeBookingId}
             onBack={() => setPage("booking")}
           />
         );
@@ -1802,9 +1779,9 @@ function PlayerLayout() {
       <aside style={{ width: 220, background: G.accent, display: "flex", flexDirection: "column", padding: "24px 0", flexShrink: 0 }}>
         <div style={{ padding: "0 20px 28px", borderBottom: `0.5px solid rgba(255,255,255,0.08)` }}>
           <div style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 700, color: "white", letterSpacing: -0.5 }}>
-            Padel<span style={{ color: G.greenMid }}>AI</span>
+            Padel <span style={{ color: G.greenMid }}>Mates</span>
           </div>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 2 }}>Management Platform</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 2 }}>Padel Mates Platform</div>
         </div>
         <nav style={{ padding: "16px 12px", flex: 1 }}>
           {NAV_ITEMS.map((item) => (
@@ -1837,14 +1814,14 @@ function PlayerLayout() {
             <button
               onClick={() => {
                 if (sidebarBooking?.id) {
-                  window.dispatchEvent(new CustomEvent("padel:open-booking-details", { detail: { bookingId: sidebarBooking.id } }));
+                  window.dispatchEvent(new CustomEvent("padel:open-booking-details"));
                 } else {
                   setPage("booking");
                 }
               }}
               style={{ width: "100%", padding: "7px", borderRadius: 7, background: "rgba(29,158,117,0.18)", border: "0.5px solid rgba(29,158,117,0.35)", color: G.greenMid, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}
             >
-              Open Booking
+              {sidebarBooking ? "View Details" : "Book Court"}
             </button>
           </div>
           <button onClick={() => { logout(); nav("/"); }} style={{ width: "100%", padding: "7px", borderRadius: 7, background: "transparent", border: "0.5px solid rgba(255,255,255,0.12)", color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>

@@ -1,4 +1,4 @@
-# Padel Management System API Contract
+# Padel Mates API Contract
 
 Base URL:
 

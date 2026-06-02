@@ -270,7 +270,7 @@ export default function SignIn() {
           <div className="auth-card">
             <div className="auth-logo">
               <div className="auth-logo-dot" />
-              <span>Verdant</span>
+              <span>Padel Mates</span>
             </div>
 
             <h1 className="auth-heading">Sign in</h1>
