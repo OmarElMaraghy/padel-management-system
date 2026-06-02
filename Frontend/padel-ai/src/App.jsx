@@ -544,7 +544,7 @@ function LandingPage() {
       <div style={{ maxWidth: 860, margin: "0 auto 60px", padding: "0 32px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
         {[
           { icon: "🎯", label: "Matchmaking found", value: "3 balanced opponents near you", stat: "ELO ±20", statColor: "green" },
-          { icon: "📈", label: "Platform win rate",  value: "71% — up 13% this month",      stat: "+13%",   statColor: "green" },
+          { icon: "📈", label: "Platform win rate",  value: "Smart Analytics View rankings, stats ",      stat: "Powered by real results",   statColor: "green" },
           { icon: "👥", label: "Active players",     value: "Join players already connecting on Padel Mates",        stat: "Growing", statColor: "amber" },
         ].map((c, i) => (
           <div key={i} style={{ ...styles.card, display: "flex", flexDirection: "column", gap: 10 }}>
