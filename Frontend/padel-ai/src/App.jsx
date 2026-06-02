@@ -80,10 +80,16 @@ function formatShortDate(value) {
   return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 function formatShortDateTime(value) {
-  return new Date(value).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(value).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+}
+function formatTime(value) {
+  return new Date(value).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "UTC" });
 }
 function formatTimeLabel(value) {
-  return new Date(value).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  return formatTime(value);
+}
+function formatTimeRange(start, end) {
+  return `${formatTime(start)} - ${formatTime(end)}`;
 }
 function overlapsTimeRange(startA, endA, startB, endB) {
   return new Date(startA) < new Date(endB) && new Date(endA) > new Date(startB);
@@ -312,8 +318,9 @@ function RecordMatchModal({ onClose, onRecorded }) {
         ]);
         if (!mounted) return;
         const activeCourts = (courtsResp || []).filter((c) => c.isActive !== false);
+        const now = new Date();
         const confirmedBookings = (bookingsResp || [])
-          .filter((b) => b.status === "Confirmed")
+          .filter((b) => b.status === "Confirmed" && new Date(b.startTime) > now && new Date(b.endTime) > now)
           .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
         const meId = meResp?.playerId ?? null;
         setCourts(activeCourts);
@@ -335,9 +342,15 @@ function RecordMatchModal({ onClose, onRecorded }) {
     return () => { mounted = false; };
   }, []);
 
-  const selectOpts = [
+  const selectedPlayerIds = [a1, a2, b1, b2].filter(Boolean);
+  const selectOpts = (currentValue) => [
     { value: "", label: "Select player..." },
-    ...players.map((p) => ({ value: String(p.playerId), label: `${p.fullName} (ELO ${p.eloRating})` })),
+    ...players
+      .filter((p) => {
+        const value = String(p.playerId);
+        return value === currentValue || !selectedPlayerIds.includes(value);
+      })
+      .map((p) => ({ value: String(p.playerId), label: `${p.fullName} (ELO ${p.eloRating})` })),
   ];
   const selectedBooking = bookings.find((b) => String(b.id) === selectedBookingId) ?? null;
   const handleBookingChange = (bookingId) => {
@@ -349,8 +362,12 @@ function RecordMatchModal({ onClose, onRecorded }) {
   const submit = async () => {
     setError("");
     const ids = [a1, a2, b1, b2].filter(Boolean);
-    if (!courtId || ids.length !== 4 || new Set(ids).size !== 4) {
+    if (!courtId || ids.length !== 4) {
       setError("Pick 4 different players and a court.");
+      return;
+    }
+    if (new Set(ids).size !== 4) {
+      setError("Each player can only be selected once. Pick 4 different players.");
       return;
     }
     if (currentPlayerId && !ids.includes(String(currentPlayerId))) {
@@ -394,6 +411,8 @@ function RecordMatchModal({ onClose, onRecorded }) {
         }),
       });
 
+      window.dispatchEvent(new CustomEvent("match-recorded"));
+      window.dispatchEvent(new CustomEvent("booking-updated"));
       onRecorded?.();
     } catch (err) {
       setError(err.message || "Failed to record match");
@@ -455,19 +474,19 @@ function RecordMatchModal({ onClose, onRecorded }) {
               <div style={{ background: G.surface, borderRadius: 14, padding: "14px 12px", border: `0.5px solid ${G.border}` }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: G.accent, marginBottom: 10 }}>Team A</div>
                 <select value={a1} onChange={(e) => setA1(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: `0.5px solid ${G.borderMed}`, fontFamily: "inherit", fontSize: 13, marginBottom: 8 }}>
-                  {selectOpts.map((o) => <option key={`a1-${o.value}`} value={o.value}>{o.label}</option>)}
+                  {selectOpts(a1).map((o) => <option key={`a1-${o.value}`} value={o.value}>{o.label}</option>)}
                 </select>
                 <select value={a2} onChange={(e) => setA2(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: `0.5px solid ${G.borderMed}`, fontFamily: "inherit", fontSize: 13 }}>
-                  {selectOpts.map((o) => <option key={`a2-${o.value}`} value={o.value}>{o.label}</option>)}
+                  {selectOpts(a2).map((o) => <option key={`a2-${o.value}`} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               <div style={{ background: G.surface, borderRadius: 14, padding: "14px 12px", border: `0.5px solid ${G.border}` }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: G.accent, marginBottom: 10 }}>Team B</div>
                 <select value={b1} onChange={(e) => setB1(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: `0.5px solid ${G.borderMed}`, fontFamily: "inherit", fontSize: 13, marginBottom: 8 }}>
-                  {selectOpts.map((o) => <option key={`b1-${o.value}`} value={o.value}>{o.label}</option>)}
+                  {selectOpts(b1).map((o) => <option key={`b1-${o.value}`} value={o.value}>{o.label}</option>)}
                 </select>
                 <select value={b2} onChange={(e) => setB2(e.target.value)} style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: `0.5px solid ${G.borderMed}`, fontFamily: "inherit", fontSize: 13 }}>
-                  {selectOpts.map((o) => <option key={`b2-${o.value}`} value={o.value}>{o.label}</option>)}
+                  {selectOpts(b2).map((o) => <option key={`b2-${o.value}`} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
             </div>
@@ -632,7 +651,7 @@ function DashboardPage({ user }) {
         court:    upcoming.courtName || `Court ${upcoming.courtId}`,
         location: upcoming.courtLocation || "",
         dateTime: formatShortDateTime(upcoming.startTime),
-        time:     new Date(upcoming.startTime).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        time:     formatTimeLabel(upcoming.startTime),
         vs:       relatedMatch ? `Scheduled match on ${relatedMatch.courtName || upcoming.courtName}` : "Court reservation confirmed",
       } : null);
     } catch (err) {
@@ -646,10 +665,12 @@ function DashboardPage({ user }) {
   useEffect(() => {
     window.addEventListener("booking-created", fetchData);
     window.addEventListener("booking-cancelled", fetchData);
+    window.addEventListener("booking-updated", fetchData);
     window.addEventListener("match-recorded", fetchData);
     return () => {
       window.removeEventListener("booking-created", fetchData);
       window.removeEventListener("booking-cancelled", fetchData);
+      window.removeEventListener("booking-updated", fetchData);
       window.removeEventListener("match-recorded", fetchData);
     };
   }, [fetchData]);
@@ -861,10 +882,12 @@ function BookingPage() {
     const reload = () => loadSlots(selectedLocation, selectedDate, allCourts);
     window.addEventListener("booking-created", reload);
     window.addEventListener("booking-cancelled", reload);
+    window.addEventListener("booking-updated", reload);
     window.addEventListener("match-recorded", reload);
     return () => {
       window.removeEventListener("booking-created", reload);
       window.removeEventListener("booking-cancelled", reload);
+      window.removeEventListener("booking-updated", reload);
       window.removeEventListener("match-recorded", reload);
     };
   }, [selectedLocation, selectedDate, allCourts, loadSlots]);
@@ -1050,15 +1073,18 @@ function BookingPage() {
             </div>
 
             {(() => {
-              const allSlots = [...new Set(
-                Object.values(availability).flatMap((slots) => slots.map((s) => s.slot))
-              )].sort();
+              const allSlots = Object.values(availability)
+                .flatMap((slots) => slots)
+                .sort((a, b) => new Date(a.rawStart) - new Date(b.rawStart))
+                .filter((slot, index, list) => list.findIndex((s) => s.slot === slot.slot) === index);
 
               if (allSlots.length === 0) {
                 return <div style={{ padding: "28px", textAlign: "center", color: G.muted, fontSize: 13 }}>No time slots available for this date.</div>;
               }
 
-              return allSlots.map((slot, rowIdx) => (
+              return allSlots.map((slotRow, rowIdx) => {
+                const slot = slotRow.slot;
+                return (
                 <div
                   key={slot}
                   style={{
@@ -1072,12 +1098,15 @@ function BookingPage() {
                   }}
                 >
                   <div style={{ fontSize: 13, fontWeight: 500, color: G.accent }}>
+                    {formatTimeRange(slotRow.rawStart, slotRow.rawEnd)}
+                    {/*
                     {slot} – {(() => {
                       const [h, m] = slot.split(":").map(Number);
                       const next = new Date(0);
                       next.setUTCHours(h + 1, m, 0, 0);
                       return next.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
                     })()}
+                    */}
                   </div>
 
                   {locationCourts.map((court) => {
@@ -1109,7 +1138,8 @@ function BookingPage() {
                     );
                   })}
                 </div>
-              ));
+                );
+              });
             })()}
           </div>
 
@@ -1145,10 +1175,11 @@ function MatchmakingPage({ user }) {
   const [loading,   setLoading]   = useState(true);
 
   const fetchMatchmaking = useCallback(async () => {
+    setLoading(true);
     try {
       const [me, all] = await Promise.all([apiFetch("/players/me"), apiFetch("/players")]);
       setMyPlayer(me);
-      setPlayers((all || []).filter((p) => p.playerId !== me.playerId));
+      setPlayers(all || []);
     } catch (err) {
       console.error("Matchmaking fetch error:", err);
     } finally {
@@ -1167,6 +1198,106 @@ function MatchmakingPage({ user }) {
       window.removeEventListener("match-recorded", fetchMatchmaking);
     };
   }, [fetchMatchmaking]);
+
+  const eloOf = (player) => Number(player?.eloRating ?? 0);
+  const avgElo = (team) => Math.round(team.reduce((sum, p) => sum + eloOf(p), 0) / team.length);
+  const qualityFor = (diff) => {
+    if (diff <= 25) return { label: "Excellent", color: "green" };
+    if (diff <= 75) return { label: "Good", color: "green" };
+    if (diff <= 150) return { label: "Fair", color: "amber" };
+    return { label: "Unbalanced", color: "coral" };
+  };
+  const playerInitials = (player) => player?.fullName?.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase() || "??";
+  const playerLine = (player, isYou = false) => (
+    <div key={player.playerId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `0.5px solid ${G.border}` }}>
+      <Avatar initials={playerInitials(player)} size={30} isYou={isYou} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: G.accent, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {player.fullName} {isYou && <span style={{ fontSize: 11, color: G.green, marginLeft: 4 }}>You</span>}
+        </div>
+        <div style={{ fontSize: 11, color: G.hint }}>{player.skillLevel || "Beginner"}</div>
+      </div>
+      <div style={{ fontFamily: "Georgia, serif", fontSize: 16, fontWeight: 700, color: G.green }}>{eloOf(player).toLocaleString()}</div>
+    </div>
+  );
+
+  const uniquePlayers = players.filter((p, index, arr) => arr.findIndex((x) => x.playerId === p.playerId) === index);
+  const currentPlayer = myPlayer ? uniquePlayers.find((p) => p.playerId === myPlayer.playerId) || myPlayer : null;
+  const others = currentPlayer ? uniquePlayers.filter((p) => p.playerId !== currentPlayer.playerId) : [];
+  const matchupRecommendations = currentPlayer
+    ? others.flatMap((partner) => (
+        others
+          .filter((p) => p.playerId !== partner.playerId)
+          .flatMap((opponentOne, opponentIndex, opponents) => (
+            opponents
+              .slice(opponentIndex + 1)
+              .map((opponentTwo) => {
+                const teamA = [currentPlayer, partner];
+                const teamB = [opponentOne, opponentTwo];
+                const teamAAvg = avgElo(teamA);
+                const teamBAvg = avgElo(teamB);
+                const eloDiff = Math.abs(teamAAvg - teamBAvg);
+                return { teamA, teamB, teamAAvg, teamBAvg, eloDiff, quality: qualityFor(eloDiff) };
+              })
+          ))
+      ))
+        .sort((a, b) => a.eloDiff - b.eloDiff)
+        .slice(0, 3)
+    : [];
+
+  return (
+    <div style={{ padding: "28px 32px", maxWidth: 1000, margin: "0 auto" }}>
+      <SectionTitle title="Matchmaking" sub="Balanced 2v2 recommendations from player ELO" />
+      <div style={{ ...styles.card, marginBottom: 16, display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 13, color: G.accent, fontWeight: 600 }}>Recommendations are based on balancing team average ELO.</div>
+          <div style={{ fontSize: 12, color: G.muted, marginTop: 4 }}>Every matchup includes you and uses the current player list from the backend.</div>
+        </div>
+        {currentPlayer && <Badge color="green">You: ELO {eloOf(currentPlayer).toLocaleString()}</Badge>}
+      </div>
+
+      {loading ? (
+        <div style={{ color: G.muted, fontSize: 13, padding: "40px 0", textAlign: "center" }}>Building balanced matchups...</div>
+      ) : !currentPlayer || uniquePlayers.length < 4 ? (
+        <div style={{ ...styles.card, color: G.muted, fontSize: 13, textAlign: "center" }}>At least 4 players are needed for matchmaking.</div>
+      ) : matchupRecommendations.length === 0 ? (
+        <div style={{ ...styles.card, color: G.muted, fontSize: 13, textAlign: "center" }}>At least 4 players are needed for matchmaking.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {matchupRecommendations.map((rec, idx) => (
+            <div key={`${rec.teamA[1].playerId}-${rec.teamB[0].playerId}-${rec.teamB[1].playerId}`} style={{ ...styles.card, border: `0.5px solid ${idx === 0 ? G.borderMed : G.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 11, color: G.hint, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Recommendation #{idx + 1}</div>
+                  <div style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 800, color: G.accent }}>ELO difference {rec.eloDiff}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <Badge color={rec.quality.color}>{rec.quality.label}</Badge>
+                  <Badge color="gray">Team A avg {rec.teamAAvg.toLocaleString()}</Badge>
+                  <Badge color="gray">Team B avg {rec.teamBAvg.toLocaleString()}</Badge>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
+                <div style={{ background: G.surface, borderRadius: 12, padding: "14px 14px 6px", border: `0.5px solid ${G.border}` }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: G.accent, marginBottom: 6 }}>Team A</div>
+                  {rec.teamA.map((p) => playerLine(p, p.playerId === currentPlayer.playerId))}
+                  <div style={{ fontSize: 11, color: G.hint, marginTop: 10 }}>Average ELO</div>
+                  <div style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: 800, color: G.green }}>{rec.teamAAvg.toLocaleString()}</div>
+                </div>
+                <div style={{ background: G.surface, borderRadius: 12, padding: "14px 14px 6px", border: `0.5px solid ${G.border}` }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: G.accent, marginBottom: 6 }}>Team B</div>
+                  {rec.teamB.map((p) => playerLine(p))}
+                  <div style={{ fontSize: 11, color: G.hint, marginTop: 10 }}>Average ELO</div>
+                  <div style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: 800, color: G.green }}>{rec.teamBAvg.toLocaleString()}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   const initials = user?.fullName?.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase() || "ME";
 
@@ -1455,7 +1586,6 @@ function AnalyticsPage({ user }) {
           onClose={() => setShowRecordMatch(false)}
           onRecorded={() => {
             setShowRecordMatch(false);
-            window.dispatchEvent(new CustomEvent("match-recorded"));
           }}
         />
       )}
@@ -1595,13 +1725,15 @@ function BookingDetailsPage({ onBack }) {
   const [cancelLoadingId, setCancelLoadingId] = useState(null);
   const [bookings, setBookings] = useState([]);
   const [courtMap, setCourtMap] = useState({});
+  const [matchMap, setMatchMap] = useState({});
   const detailsMountedRef = useRef(false);
 
   const fetchBookingDetails = useCallback(async () => {
     try {
-      const [bookingsResp, courtsResp] = await Promise.all([
+      const [bookingsResp, courtsResp, matchesResp] = await Promise.all([
         apiFetch("/bookings/my"),
         apiFetch("/courts"),
+        apiFetch("/matches"),
       ]);
       const now = new Date();
       const upcoming = (bookingsResp || [])
@@ -1611,10 +1743,15 @@ function BookingDetailsPage({ onBack }) {
         acc[court.id] = court;
         return acc;
       }, {});
+      const matchesByBookingId = (matchesResp || []).reduce((acc, match) => {
+        if (match.bookingId) acc[match.bookingId] = match;
+        return acc;
+      }, {});
 
       if (detailsMountedRef.current) {
         setBookings(upcoming);
         setCourtMap(courtsById);
+        setMatchMap(matchesByBookingId);
       }
     } catch (err) {
       console.error("Booking details error:", err);
@@ -1628,11 +1765,13 @@ function BookingDetailsPage({ onBack }) {
     fetchBookingDetails();
     window.addEventListener("booking-created", fetchBookingDetails);
     window.addEventListener("booking-cancelled", fetchBookingDetails);
+    window.addEventListener("booking-updated", fetchBookingDetails);
     window.addEventListener("match-recorded", fetchBookingDetails);
     return () => {
       detailsMountedRef.current = false;
       window.removeEventListener("booking-created", fetchBookingDetails);
       window.removeEventListener("booking-cancelled", fetchBookingDetails);
+      window.removeEventListener("booking-updated", fetchBookingDetails);
       window.removeEventListener("match-recorded", fetchBookingDetails);
     };
   }, [fetchBookingDetails]);
@@ -1668,6 +1807,7 @@ function BookingDetailsPage({ onBack }) {
           {bookings.map((booking) => {
             const court = courtMap[booking.courtId];
             const courtName = court?.name || booking.courtName || `Court ${booking.courtId}`;
+            const bookingMatch = matchMap[booking.id];
             const isCancelling = cancelLoadingId === booking.id;
 
             return (
@@ -1687,6 +1827,16 @@ function BookingDetailsPage({ onBack }) {
                       <div style={{ fontSize: 12, color: G.accent, fontWeight: 600 }}>{formatTimeLabel(booking.endTime)}</div>
                       <div style={{ fontSize: 12, color: G.hint }}>Status</div>
                       <div><Badge color="green">{booking.status}</Badge></div>
+                      <div style={{ fontSize: 12, color: G.hint }}>Match</div>
+                      <div>
+                        {bookingMatch ? (
+                          <Badge color={bookingMatch.status === "Completed" ? "green" : "amber"}>
+                            {bookingMatch.status === "Completed" ? "Match recorded" : "Match scheduled"}
+                          </Badge>
+                        ) : (
+                          <Badge color="gray">No match yet</Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <button
@@ -1738,10 +1888,12 @@ function PlayerLayout() {
   useEffect(() => {
     window.addEventListener("booking-created", refreshSidebar);
     window.addEventListener("booking-cancelled", refreshSidebar);
+    window.addEventListener("booking-updated", refreshSidebar);
     window.addEventListener("match-recorded", refreshSidebar);
     return () => {
       window.removeEventListener("booking-created", refreshSidebar);
       window.removeEventListener("booking-cancelled", refreshSidebar);
+      window.removeEventListener("booking-updated", refreshSidebar);
       window.removeEventListener("match-recorded", refreshSidebar);
     };
   }, [refreshSidebar]);
