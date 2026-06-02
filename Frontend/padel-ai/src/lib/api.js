@@ -1,5 +1,5 @@
-export const API_BASE = "http://localhost:5180/api";
-
+export const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:5180/api";
 export async function apiFetch(path, options = {}) {
   const token = localStorage.getItem("padel_token");
   const res = await fetch(`${API_BASE}${path}`, {
