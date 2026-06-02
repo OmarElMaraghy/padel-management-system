@@ -315,7 +315,7 @@ export default function SignUp() {
                   <input
                     className="auth-input"
                     type="password"
-                    placeholder="At least 8 characters"
+                    placeholder="Enter password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
