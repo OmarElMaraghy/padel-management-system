@@ -300,7 +300,6 @@ export default function SignIn() {
                     onChange={(e) => setPassword(e.target.value)}
                     required
                   />
-                  <a href="#" className="forgot-link">Forgot password?</a>
                 </div>
               </div>
 
